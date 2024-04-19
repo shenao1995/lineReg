@@ -110,7 +110,7 @@ def get_initial_parameters(true_params, used_device):
 def get_lineCenter_offset(pred, target):
     pred_bbx = masks_to_boxes(pred.squeeze(0))
     target_bbx = masks_to_boxes(target.squeeze(0))
-    # print(pred_bbx)
+    print(pred_bbx)
     # print(target_bbx)
     pred_center_x = pred_bbx[0, 0] + (pred_bbx[0, 2] - pred_bbx[0, 0]) / 2
     pred_center_y = pred_bbx[0, 1] + (pred_bbx[0, 3] - pred_bbx[0, 1]) / 2
@@ -246,7 +246,7 @@ def crop_ct_vert(img_path, mask_path, save_path):
     return bx, by, bz, cropped_img
 
 
-def resample_img(input_img, new_width=None, save_path=''):
+def resample_img(input_img, new_width=None, save_path=None, interpolator_method=sitk.sitkLinear):
     # image_file_reader = sitk.ImageFileReader()
     # # only read DICOM images
     # image_file_reader.SetImageIO("GDCMImageIO")
@@ -269,7 +269,7 @@ def resample_img(input_img, new_width=None, save_path=''):
             image1=image,
             size=new_size,
             transform=sitk.Transform(),
-            interpolator=sitk.sitkLinear,
+            interpolator=interpolator_method,
             outputOrigin=image.GetOrigin(),
             outputSpacing=new_spacing,
             outputDirection=image.GetDirection(),
@@ -288,8 +288,9 @@ def resample_img(input_img, new_width=None, save_path=''):
     #         image = sitk.InvertIntensity(image, maximum=255)
     #     image = sitk.Cast(image, sitk.sitkUInt8)
     # sitk.WriteImage(image, output_file_name)
-    if not os.path.exists(save_path) and save_path != '':
-        sitk.WriteImage(image, save_path)
+    if save_path:
+        if not os.path.exists(save_path):
+            sitk.WriteImage(image, save_path)
     return image
 
 
@@ -320,53 +321,3 @@ def bbx_crop_gt_vert(img, mask, inverse=True):
     # save_path = os.path.join(gt_vert_save_fold, seg)
     # print(save_path)
     # print(seg_save_path)
-
-
-def pix2wld_matrix():
-    sdr = 570
-    delx = 1.2
-    dely = 1.2
-    height = width = 256
-    flip_xz = torch.tensor(
-        [
-            [0.0, 0.0, -1.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-    translate = torch.tensor(
-        [
-            [1.0, 0.0, 0.0, -sdr],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-    gt_rot = torch.tensor([[torch.pi / 2, 0, torch.pi]])
-    gt_trans = torch.tensor([[22.0078, 34.2344, 38.4375]])
-    pose = convert(gt_rot, gt_trans, parameterization='euler_angles', convention="ZYX")
-    # print(pose.matrix[:, :3])
-    # pose = random_rigid_transform()
-    flip_xz = RigidTransform(flip_xz)
-    translate = RigidTransform(translate)
-    extrinsic = (
-        pose.inverse().compose(translate).compose(flip_xz)
-    )
-    print(extrinsic.matrix)
-    intrinsic = torch.tensor(
-        [
-            [2 * sdr / delx, 0.0, 0.0 / delx - height / 2, 0.0],
-            [0.0, 2 * sdr / dely, 0.0 / dely - width / 2, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-        ]
-    )
-    intrinsic = RigidTransform(intrinsic)
-    pix2wld_mat = (extrinsic.compose(intrinsic))
-    # pix2wld_mat.matrix[..., -1]
-    print(pix2wld_mat.matrix)
-    print(pix2wld_mat.matrix[..., -1].squeeze() / pix2wld_mat.matrix[..., -1].squeeze()[-1])
-
-
-if __name__ == '__main__':
-    pix2wld_matrix()

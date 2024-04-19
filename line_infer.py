@@ -31,7 +31,7 @@ def infer_method(input_tensor=None, img_list=None):
     input_size = 256
     img_size = 256
     img_list = [torch.squeeze(input_tensor).to(device)]
-    log_dir = 'line_model/AttUNet_model_total.pth'
+    log_dir = 'line_model/AttUNet_model1.pth'
     # img_list = [img]
     test_files = [{"img": Img}
                   for Img in img_list]

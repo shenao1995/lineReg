@@ -27,9 +27,10 @@ import math
 import os
 from losses.ZNCC import ncc, gradncc
 from cmaes import CMA, CMAwM
+from diffdrr.pose import convert, RigidTransform
 
 
-def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_name, save_dir, x_dirs, line_path=None):
+def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_name, save_dir, x_dirs, line_paths=None):
     # 读取椎骨CT
     offsetx, offsety, offsetz, vert_img = crop_ct_vert(origin_ct_path, seg_path, save_dir)
     offset_trans = np.array([-offsetx, offsety, offsetz])
@@ -39,12 +40,33 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     # gt_mask = torch.unsqueeze(gt_mask, dim=0).to(device)
     # gt_mask = torch.unsqueeze(gt_mask, dim=0).to(device)
     # gt_mask = torch.permute(gt_mask, (0, 1, 3, 2))
+
+    ap_line = line_preprocess(line_paths[0])
+    img_center = np.array([-7.3503990173339844e+01, -3.8186083984375000e+02, 8.2500099182128906e+01])
+    xray_center = np.array([2.8454119873046875e+02, 6.8389459228515625e+02, 8.2500099182128906e+01])
+    SDR = np.sqrt(np.sum((img_center - xray_center)**2))
+    print(SDR / 2)
     used_gt, drr_gene, true_params, gt_rotations, gt_translations = get_drr(img_meta=vert_img,
-                                                                            SDR=570,
-                                                                            DELX=1.2,
+                                                                            SDR=SDR / 2,
+                                                                            DELX=cropped_spacing,
                                                                             offset_trans=offset_trans,
                                                                             tissue=True)
     scaleInen = ScaleIntensity()
+    pose_unfixed = convert(gt_rotations, gt_translations, parameterization="euler_angles", convention="ZYX")
+    # extrinsic_init = pose_unfixed.matrix
+    # x_dir = np.array([-9.4793528318405151e-01, 3.1846302747726440e-01, 0.0])
+    # y_dir = np.array([0.0, 0.0, 1.0])
+    # z_dir = np.cross(x_dir, y_dir)
+    # wld_extrinsic_R = np.array([x_dir, z_dir, y_dir])
+    # wld_extrinsic = np.concatenate((wld_extrinsic_R, xray_center.reshape(3, 1)), axis=1)
+    # wld_extrinsic = np.vstack((wld_extrinsic, np.array([0.0, 0.0, 0.0, 1.0])))
+    # print(wld_extrinsic)
+    # wld_extrinsic = torch.FloatTensor(wld_extrinsic)
+    # wld_extrinsic = RigidTransform(wld_extrinsic).to(device)
+    # extrinsic_update = (pose_unfixed.inverse().compose(wld_extrinsic))
+    # print('extrinsic_update:-----------------------------------------------------------')
+    # print(extrinsic_update.matrix)
+    # mov_drr = drr_gene(pose_unfixed.matrix, parameterization="matrix")
     mov_drr = drr_gene(
         gt_rotations,
         gt_translations,
@@ -53,47 +75,49 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     )
     ini_drr = torch.permute(mov_drr, (0, 1, 3, 2))
     bbx_gt = torch.permute(ap_gt, (0, 1, 3, 2))
-    print(bbx_gt.shape)
+    # print(bbx_gt.shape)
     # out_img = sitk.GetImageFromArray(ini_drr.squeeze().detach().cpu().numpy())
     # sitk.WriteImage(out_img, 'Data/natong/case3/L5_mov.nii.gz')
     mov_line = infer_method(mov_drr)
     pred_mask = torch.argmax(mov_line, dim=1)
-    pred_mask = torch.permute(pred_mask.unsqueeze(0), (0, 1, 3, 2))
+    # pred_mask = torch.permute(pred_mask.unsqueeze(0), (0, 1, 3, 2))
     # line_tensor = torch.permute(gt_line, (0, 1, 3, 2))
     # pred_mask = torch.permute(pred_mask, (0, 2, 1))
-    print(ini_drr.shape)
-    coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
+    # print(ini_drr.shape)
+    # 90., 92., 255., 193.
+    # 128., 19., 255., 127.
     # coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
-    coarse_trans = torch.tensor([[coarse_x, 0, coarse_y]]).to(device)
+    # coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
+    # coarse_trans = torch.tensor([[coarse_x, 0, coarse_y]]).to(device)
     # print(coarse_x, coarse_y)
-    translations = gt_translations + coarse_trans
+    # translations = gt_translations + coarse_trans
     # translations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
     # print(coarse_trans)
-    print(gt_rotations)
-    print(gt_translations)
+    # print(gt_rotations)
+    # print(gt_translations)
     # 可以生成带梯度的drr图像
-    coarse_reg = Registration(
-        drr_gene,
-        gt_rotations.clone(),
-        gt_translations.clone(),
-        parameterization="euler_angles",
-        convention="ZYX",
-        dual_view=True
-    )
-    coarse_drr = coarse_reg()
+    # coarse_reg = Registration(
+    #     drr_gene,
+    #     gt_rotations.clone(),
+    #     gt_translations.clone(),
+    #     parameterization="euler_angles",
+    #     convention="ZYX",
+    #     dual_view=True
+    # )
+    # coarse_drr = coarse_reg()
     # coarse_drr = torch.permute(coarse_drr, (0, 1, 3, 2))
     plt.subplot(2, 2, 1)
     plt.imshow(ap_gt.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 2)
     plt.imshow(la_gt.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 3)
-    plt.imshow(coarse_drr[0, :].squeeze().detach().cpu().numpy())
+    plt.imshow(pred_mask.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 4)
-    plt.imshow(coarse_drr[1, :].squeeze().detach().cpu().numpy())
+    plt.imshow(ap_line.squeeze().detach().cpu().numpy())
     plt.show()
     plt.close()
     # 优化算法
-    # optimize(drr_gene, [ap_gt, la_gt], case_name, scaleInen, gt_rotations, translations)
+    optimize(drr_gene, [ap_gt, la_gt], ap_line, case_name, scaleInen, gt_rotations, gt_translations)
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -102,6 +126,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
 def optimize(
         reg: DRR,
         gt_imgs,
+        gt_lines,
         samplename,
         scaler,
         ini_rot,
@@ -111,9 +136,9 @@ def optimize(
     T1 = time.time()
     # 损失函数，先尝试的归一化互相关loss
     GNCC_loss = gradncc
-    NCC_loss = ncc
+    # NCC_loss = ncc
     # HD_loss = HausdorffDTLoss()
-    # DCE_loss = DiceCELoss(to_onehot_y=True, softmax=True)
+    DCE_loss = DiceCELoss(to_onehot_y=True, softmax=True)
     # criterion = GeneralizedDiceLoss(include_background=False, to_onehot_y=True)
     min_generation = 0
     params = []
@@ -136,10 +161,11 @@ def optimize(
     covs = np.diag([15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 50, 100, 25])
     # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
     # optimizer = CMAwM(mean=rtvec, sigma=2.0, bounds=bound, population_size=100, steps=steps, cov=covs)
-    optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs)
+    optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
     for itr in tqdm(range(n_itrs), ncols=100):
         solutions = []
         op_loss = 0
+        dce_loss = 0
         for _ in range(optimizer.population_size):
             # x_eval, x_tell = optimizer.ask()
             x_eval = optimizer.ask()
@@ -148,34 +174,34 @@ def optimize(
                                                   device=device), 0)
             estimate = reg(x_eval[:, :3, ], x_eval[:, 3:], parameterization="euler_angles", convention="ZYX", dual_view=True)
             # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
+            ap_pred_line = infer_method(estimate[0, :].unsqueeze(0))
+            # print(gt_lines.shape)
+            # print(ap_pred_line.shape)
+            line_loss = DCE_loss(ap_pred_line, gt_lines)
             ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
+            ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2 * 0.9 + 0.1 * line_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), ncc_loss.detach().squeeze().cpu().numpy()))
+            # print(line_loss.item())
             # solutions.append((x_tell, ncc_loss.detach().squeeze().cpu().numpy()))
             # print(solutions)
             # gncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
             loss = ncc_loss
+            dce_loss += line_loss.item()
             op_loss += loss.item()
-            # loss = ncc_loss
-            # print(gncc_loss.item())
-            # print(loss.item())
-            # print("gncc=" + str(gncc_loss.item()))
-            # loss.requires_grad_(True)
-            # print(loss.item())
-            # loss.backward()
-            # optimizer.step()
-            # print(loss.item())
-            # losses.append(loss.item())
-            # print(abs(losses[itr - 1] - loss.item()))
-            # scheduler.step()
+            # plt.subplot(1, 2, 1)
+            # plt.imshow(gt_lines.squeeze().detach().cpu().numpy())
+            # plt.subplot(1, 2, 2)
+            # plt.imshow(torch.argmax(ap_pred_line, dim=1).squeeze().detach().cpu().numpy())
+            # plt.show()
         optimizer.tell(solutions)
         result = torch.unsqueeze(torch.tensor(optimizer._mean, dtype=torch.float, requires_grad=False,
                                               device=device), 0)
         # print(result)
         cur_loss = op_loss / optimizer.population_size
+        cur_line_loss = dce_loss / optimizer.population_size
         losses.append(cur_loss)
-        print(f"itr {itr + 1} average loss: {cur_loss:.4f}")
+        print(f"itr {itr + 1} average loss: {cur_loss:.4f} dce loss: {cur_line_loss:.4f}")
         alpha, beta, gamma = result[:, :3, ].squeeze().tolist()
         bx, by, bz = result[:, 3:, ].squeeze().tolist()
         params.append([i for i in [alpha, beta, gamma, bx, by, bz]])
@@ -206,7 +232,7 @@ def optimize(
     # return df
 
 
-def preliminary_process(xray_path, boundingbox_path, x_dir):
+def preliminary_process(xray_path, boundingbox_path=None, x_dir=None):
     xray = sitk.ReadImage(xray_path)
     # print(xray.GetSize())
     xray.SetSpacing((3.0360001325607300e-01, 3.0360001325607300e-01))
@@ -234,6 +260,18 @@ def preliminary_process(xray_path, boundingbox_path, x_dir):
     ground_truth = torch.unsqueeze(ground_truth, dim=0).to(device)
     ground_truth = torch.permute(ground_truth, (0, 1, 3, 2))
     return ground_truth, resized_x.GetSpacing()[0]
+
+
+def line_preprocess(line_path):
+    line_img = sitk.ReadImage(line_path)
+    ap_line = resample_img(line_img, new_width=256, interpolator_method=sitk.sitkNearestNeighbor)
+    line_arr = sitk.GetArrayFromImage(ap_line)
+    line_arr = line_arr.astype(float)
+    line_tensor = torch.tensor(line_arr)
+    line_tensor = torch.unsqueeze(line_tensor, dim=0).to(device)
+    line_tensor = torch.unsqueeze(line_tensor, dim=0).to(device)
+    line_tensor = torch.permute(line_tensor, (0, 1, 3, 2))
+    return line_tensor
 
 
 def animate_in_browser(df, max_length, drr_mov, gt):
@@ -274,5 +312,7 @@ if __name__ == '__main__':
     vert_save_path = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
     resized_x_ap_save_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
     resized_x_la_save_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
+    line_ap_path = 'Data/tuodao/{}/X/L3_line_ap.nii.gz'.format(caseName)
+    line_la_path = 'Data/tuodao/{}/X/L3_line_la.nii.gz'.format(caseName)
     reg_method(ct_path, vert_seg_path, [ap_gt_path, la_gt_path], [ap_bbx_path, la_bbx_path], '{}_L3'.format(caseName),
-               vert_save_path, [resized_x_ap_save_path, resized_x_la_save_path])
+               vert_save_path, [resized_x_ap_save_path, resized_x_la_save_path], [line_ap_path, line_la_path])

@@ -62,8 +62,9 @@ def reg_method(origin_ct_path, seg_path, xray_path, boundingbox_path, case_name,
     # x_mask_arr = torch.tensor(x_mask_arr)
     used_gt, drr_gene, true_params, gt_rotations, gt_translations = get_drr(img_meta=vert_img,
                                                                             SDR=570,
-                                                                            DELX=1.3,
+                                                                            DELX=resized_x.GetSpacing()[0],
                                                                             offset_trans=offset_trans,
+                                                                            poseture='lal',
                                                                             tissue=True)
     scaleInen = ScaleIntensity()
     # ground_truth = scaleInen(ground_truth)
@@ -112,7 +113,7 @@ def reg_method(origin_ct_path, seg_path, xray_path, boundingbox_path, case_name,
     # pred_mask = torch.permute(pred_mask, (0, 2, 1))
     print(ini_drr.shape)
     coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
-    coarse_trans = torch.tensor([[coarse_x-20, 0, coarse_y-20]]).to(device)
+    coarse_trans = torch.tensor([[coarse_x, 0, coarse_y]]).to(device)
     # print(coarse_x, coarse_y)
     translations = gt_translations + coarse_trans
     # print(coarse_trans)
@@ -120,7 +121,7 @@ def reg_method(origin_ct_path, seg_path, xray_path, boundingbox_path, case_name,
     coarse_reg = Registration(
         drr_gene,
         gt_rotations.clone(),
-        translations.clone(),
+        gt_translations.clone(),
         parameterization="euler_angles",
         convention="ZYX",
     )
@@ -135,7 +136,7 @@ def reg_method(origin_ct_path, seg_path, xray_path, boundingbox_path, case_name,
     plt.show()
     plt.close()
     # 优化算法
-    optimize(drr_gene, ground_truth, case_name, scaleInen, gt_rotations, translations)
+    optimize(drr_gene, ground_truth, case_name, scaleInen, gt_rotations, gt_translations)
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -303,8 +304,8 @@ if __name__ == '__main__':
     caseName = 'dukemei'
     ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
     vert_seg_path = 'Data/tuodao/{}/L3_seg.nii.gz'.format(caseName)
-    target_vert_path = 'Data/tuodao/{}/X/dukemei_ap.nii.gz'.format(caseName)
-    bbx_path = 'Data/tuodao/{}/X/L3_bbx.nii.gz'.format(caseName)
+    target_vert_path = 'Data/tuodao/{}/X/dukemei_la.nii.gz'.format(caseName)
+    bbx_path = 'Data/tuodao/{}/X/L3_bbx_la.nii.gz'.format(caseName)
     vert_save_path = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
     resized_x_save_path = 'Data/tuodao/{}/X/{}_resized_x.nii.gz'.format(caseName, caseName)
     reg_method(ct_path, vert_seg_path, target_vert_path, bbx_path, '{}_L3'.format(caseName), vert_save_path,

@@ -32,20 +32,20 @@ from matplotlib import font_manager, rcParams
 
 def animate_reg_process():
     caseName = 'dukemei'
-    isDualView = True
-    video_name = 'results/tuodao/{}_L3_dual.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
+    isDualView = False
+    video_name = 'results/tuodao/{}_L3_la.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_pose.csv'.format(caseName)
     poses_data = pd.read_csv(results_path)
     reader = LoadImage(ensure_channel_first=True, image_only=False)
-    SDR = 570.0
+    SDR = 570
     HEIGHT = 256
-    DELX = 1.2
+    DELX = 1.1266406741924584
     ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
     used_ct_arr = reader(ctDir)
     spacing = used_ct_arr[1]['pixdim']
     # print(spacing1)
     spacing = np.array((spacing[1], spacing[2], spacing[3]), dtype=np.float64)
-    bg_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
+    bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
     la_bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
     rgb_ap_gt = read_bg_img(bg_path, reader)
     if isDualView:
@@ -56,7 +56,7 @@ def animate_reg_process():
     # plt.imshow(rgb_la_gt)
     # plt.colorbar()
     # plt.show()
-    drr_generator = DRR(used_ct_arr[0][0].cpu().numpy(), spacing, sdr=SDR, height=HEIGHT, delx=DELX,
+    drr_generator = DRR(used_ct_arr[0][0].cpu().numpy(), spacing, sdr=SDR * 2, height=HEIGHT, delx=DELX,
                         bone_attenuation_multiplier=10.5).to(device)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10, (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))

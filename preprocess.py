@@ -235,7 +235,7 @@ def read_xray_and_crop():
 
 
 def png2nii():
-    file_path = 'Data/tuodao/dukemei/X/la_x.tif'
+    file_path = 'Data/tuodao/dingjunmei/X/x_la.tif'
     img = cv2.imread(file_path)
     img_new = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     # img_tensor = torch.tensor(img_new)
@@ -247,7 +247,7 @@ def png2nii():
     # resized_img = resample_img(out_img, new_width=256)
     print(out_img.GetSize())
     print(out_img.GetSpacing())
-    sitk.WriteImage(out_img, 'Data/tuodao/dukemei/X/dukemei_la.nii.gz')
+    sitk.WriteImage(out_img, 'Data/tuodao/dingjunmei/X/dingjunmei_la.nii.gz')
 
 
 def resize_img():
