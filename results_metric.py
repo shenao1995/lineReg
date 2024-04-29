@@ -24,30 +24,37 @@ from IPython.display import IFrame
 # from diffpose.visualization import fiducials_to_mesh, lines_to_mesh
 from sklearn.metrics import mean_absolute_error
 from diffdrr.pose import convert
-from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img
+from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, get_ext_pose
 from diffpose.visualization import overlay_edges
+from diffdrr.data import read
 import seaborn as sns
 from matplotlib import font_manager, rcParams
 
 
 def animate_reg_process():
     caseName = 'dukemei'
-    isDualView = False
-    video_name = 'results/tuodao/{}_L3_la.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_pose.csv'.format(caseName)
+    vert_num = 'L3'
+    isDualView = True
+    video_name = 'results/tuodao/{}_L3_dual.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
+    ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
+    la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
+    ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
+    vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
+    vert_save_path = 'Data/tuodao/{}/{}_{}.nii.gz'.format(caseName, caseName, vert_num)
+    ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(ap_xml_path)
+    la_Xdir, la_Ydir, _, _, _, la_Wld_Offset = read_xml(la_xml_path)
     poses_data = pd.read_csv(results_path)
     reader = LoadImage(ensure_channel_first=True, image_only=False)
-    SDR = 570
-    HEIGHT = 256
-    DELX = 1.1266406741924584
-    ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
-    used_ct_arr = reader(ctDir)
-    spacing = used_ct_arr[1]['pixdim']
-    # print(spacing1)
-    spacing = np.array((spacing[1], spacing[2], spacing[3]), dtype=np.float64)
-    bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
+    # offsetx, offsety, offsetz, vert_img, _ = crop_ct_vert(ct_path, vert_seg_path)
+    # offset_trans = np.array([offsetx, offsety, offsetz])
+    # offset_trans[0] = float(ap_Wld_Offset[1]) / SDD * offset_trans[0]
+    # offset_trans[1] = float(ap_Wld_Offset[1]) / SDD * offset_trans[1]
+    DELX = 1.1574750505387783
+    bg_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
     la_bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
     rgb_ap_gt = read_bg_img(bg_path, reader)
+    print(rgb_ap_gt.shape)
     if isDualView:
         rgb_la_gt = read_bg_img(la_bg_path, reader)
     plt.imshow(rgb_ap_gt)
@@ -56,31 +63,35 @@ def animate_reg_process():
     # plt.imshow(rgb_la_gt)
     # plt.colorbar()
     # plt.show()
-    drr_generator = DRR(used_ct_arr[0][0].cpu().numpy(), spacing, sdr=SDR * 2, height=HEIGHT, delx=DELX,
-                        bone_attenuation_multiplier=10.5).to(device)
+    subject = read(vert_save_path, bone_attenuation_multiplier=10.5)
+    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX).to(device)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10, (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
     else:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10, (rgb_ap_gt.shape[0], rgb_ap_gt.shape[1]))
     for idx, row in poses_data.iterrows():
-        # fig, ax_opt = make_fig() if ground_truth is None else make_fig(ground_truth)
-        # params = row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values
-        rotations = (
-            torch.tensor(row[["alpha", "beta", "gamma"]].values).unsqueeze(0)
-            .to(device)
-        )
-        # la_rotations = rotations + torch.tensor([[-torch.pi / 2, 0, 0]]).to(device)
-        # print(rotations)
-        # rotations = rotations + to
-        translations = (
-            torch.tensor(row[["bx", "by", "bz"]].values).unsqueeze(0).to(device)
+        # rotations = (
+        #     torch.tensor(row[["alpha", "beta", "gamma"]].values).unsqueeze(0)
+        #     .to(device)
+        # )
+        # translations = (
+        #     torch.tensor(row[["bx", "by", "bz"]].values).unsqueeze(0).to(device)
+        # )
+        pose = (
+            torch.tensor(row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
         )
         # print(row[["bx", "by", "bz"]].values)
-        itr = drr_generator(rotations.float(), translations.float(), parameterization="euler_angles",
-                            convention="ZYX", dual_view=isDualView)
+        ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, float(ap_Wld_Offset[1]), pose.float())
+        la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, float(la_Wld_Offset[0]), pose.float())
+        # print(ap_extrinsic_update.matrix.shape)
+        dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
+        itr = drr_generator(dual_pose, parameterization="matrix")
         # print(itr.shape)
-        itr = torch.permute(itr, (0, 1, 3, 2))
+        # itr = torch.permute(itr, (0, 1, 3, 2))
         itr = itr.squeeze().cpu().numpy()
+        # out_img = sitk.GetImageFromArray(itr)
+        # out_img = resample_img(out_img, new_width=976)
+        # out_arr = sitk.GetArrayFromImage(out_img)
         # print(itr.shape)
         if isDualView:
             ap_contour = extract_img_overlay(itr[0, :])
@@ -388,9 +399,69 @@ def ssim(imageA, imageB):
     return ssim_val
 
 
+def test_gt_overlay():
+    caseName = 'dukemei'
+    isDualView = True
+    video_name = 'results/tuodao/{}_L3_la.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
+    poses_data = pd.read_csv(results_path)
+    # print(poses_data.iloc[-1, 0])
+    reader = LoadImage(ensure_channel_first=True, image_only=False)
+    SDR = 562.1456658219104
+    HEIGHT = 256
+    DELX = 1.1266406741924584
+    ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
+    used_ct_arr = reader(ctDir)
+    spacing = used_ct_arr[1]['pixdim']
+    # print(spacing1)
+    spacing = np.array((spacing[1], spacing[2], spacing[3]), dtype=np.float64)
+    bg_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
+    la_bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
+    rgb_ap_gt = read_bg_img(bg_path, reader)
+    # if isDualView:
+    rgb_la_gt = read_bg_img(la_bg_path, reader)
+    drr_generator = DRR(used_ct_arr[0][0].cpu().numpy(), spacing, sdr=SDR, height=HEIGHT, delx=DELX,
+                        bone_attenuation_multiplier=10.5).to(device)
+    rotations = (
+        torch.tensor([[poses_data.iloc[-1, 0], poses_data.iloc[-1, 1], poses_data.iloc[-1, 2]]])
+        .to(device)
+    )
+    translations = (
+        torch.tensor([[poses_data.iloc[-1, 3], poses_data.iloc[-1, 4], poses_data.iloc[-1, 5]]]).to(device)
+    )
+    print(rotations)
+    print(translations)
+    coarse_trans = torch.tensor([[-5, 5, 10]]).to(device)
+    coarse_rot = torch.tensor([[torch.pi/9, -torch.pi / 60, -torch.pi/60]]).to(device)
+    translations = translations + coarse_trans
+    rotations = rotations + coarse_rot
+    itr = drr_generator(rotations.float(), translations.float(), parameterization="euler_angles",
+                        convention="ZYX", dual_view=isDualView)
+    itr = torch.permute(itr, (0, 1, 3, 2))
+    itr = itr.squeeze().cpu().numpy()
+    ap_contour = extract_img_overlay(itr[0, :])
+    # print(np.max(ap_contour))
+    ap_contour_gray = cv2.cvtColor(ap_contour, cv2.COLOR_BGR2GRAY)
+    ap_contour_gray = np.where(ap_contour_gray != 0, 1, 0)
+    out_ap_edge = sitk.GetImageFromArray(ap_contour_gray)
+    sitk.WriteImage(out_ap_edge, 'Data/tuodao/{}/X/gt_edge_ap.nii.gz'.format(caseName))
+    la_contour = extract_img_overlay(itr[1, :])
+    la_contour_gray = cv2.cvtColor(la_contour, cv2.COLOR_BGR2GRAY)
+    la_contour_gray = np.where(la_contour_gray != 0, 1, 0)
+    out_la_edge = sitk.GetImageFromArray(la_contour_gray)
+    sitk.WriteImage(out_la_edge, 'Data/tuodao/{}/X/gt_edge_la.nii.gz'.format(caseName))
+    rgb_mov = dual_view_joint(ap_contour, la_contour)
+    rgb_gt = dual_view_joint(rgb_ap_gt, rgb_la_gt)
+    result = cv2.addWeighted(rgb_gt, 1, rgb_mov, 0.5, 0)
+    plt.imshow(result)
+    plt.show()
+
+
+
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     animate_reg_process()
+    # test_gt_overlay()
     # reg_process_visual_3d()
     # cal_error()
     # draw_box_plot()

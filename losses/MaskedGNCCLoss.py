@@ -18,14 +18,13 @@ class MaskNormalizedCrossCorrelation2d(torch.nn.Module):
         self.patch_size = patch_size
         self.eps = eps
 
-    def forward(self, x1, x2, mask):
+    def forward(self, x1, x2):
         if self.patch_size is not None:
             x1 = to_patches(x1, self.patch_size)
             x2 = to_patches(x2, self.patch_size)
         assert x1.shape == x2.shape, "Input images must be the same size"
 
         _, c, h, w = x1.shape
-        x2 = x2 * mask
         x1, x2 = self.norm(x1), self.norm(x2)
         score = torch.einsum("b...,b...->b", x1, x2)
         score /= c * h * w
@@ -53,10 +52,10 @@ class MaskGradientNormalizedCrossCorrelation2d(MaskNormalizedCrossCorrelation2d)
         super().__init__(patch_size, **kwargs)
         self.sobel = Sobel(sigma)
 
-    def forward(self, x1, x2, mask):
+    def forward(self, x1, x2):
         x1 = self.sobel(x1)
         x2 = self.sobel(x2)
-        return super().forward(x1, x2, mask)
+        return super().forward(x1, x2)
 
 # %% ../notebooks/api/05_metrics.ipynb 7
 from torchvision.transforms.functional import gaussian_blur

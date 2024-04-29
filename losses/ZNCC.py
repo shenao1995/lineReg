@@ -58,5 +58,4 @@ def gradncc(I, J, mask=None, device='cuda', win=None, eps=1e-10):
     # plt.subplot(1, 4, 4)
     # plt.imshow(Jy[0, :].squeeze().detach().cpu().numpy())
     # plt.show()
-
     return 1 - 0.5 * cal_ncc(Ix, Jx, eps) - 0.5 * cal_ncc(Iy, Jy, eps)

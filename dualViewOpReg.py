@@ -25,111 +25,85 @@ from losses.MaskedGNCCLoss import MaskGradientNormalizedCrossCorrelation2d, Mask
 from tools import get_drr, get_lineCenter_offset
 from sklearn.metrics import mean_absolute_error
 import math
-import os
+from tools import get_drr, get_lineCenter_offset, crop_ct_vert, gaussian_preprocess, resample_img, bbx_crop_gt_vert
+from DualView_CMAES_Reg import preliminary_process, line_preprocess, get_cam_wld_mat
 
 
-def reg_method():
+def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_name, save_dir, x_dirs,
+               cam_wld, line_paths=None):
     # 读取椎骨CT
-    reader = LoadImage(ensure_channel_first=True, image_only=False)
-    np.random.seed(442)
-    # ct_Dir = 'Data/gncc_data/tuodao/dingjunmei/dingjunmei.nii.gz'
-    # vert_tissue_Dir = 'Data/gncc_data/tuodao/dingjunmei/dingjunmei_L2.nii.gz'
-    vert_Dir = 'Data/gncc_data/tuodao/dingjunmei/dingjunmei_L2.nii.gz'
-    if len(os.path.split(vert_Dir)[-1].split('_')) > 2:
-        case_name = '_'.join(os.path.split(vert_Dir)[-1].split('_')[:-1])
-    else:
-        case_name = os.path.split(vert_Dir)[-1].split('.')[0]
-    print(case_name)
-    excel_path = 'Data/gncc_data/total_data_info.csv'
-    info_data = pd.read_csv(excel_path)
-    offsetx = info_data.loc[info_data['name'] == case_name]['offsetx'].item()
-    offsety = info_data.loc[info_data['name'] == case_name]['offsety'].item()
-    offsetz = info_data.loc[info_data['name'] == case_name]['offsetz'].item()
-    offset_trans = np.array([- offsetx, offsety, offsetz])
-    # ap_vert_gt, _, _, _, _ = get_drr(vert_tissue_Dir, offset_trans, 'ap', tissue=True)
-    # la_vert_gt, _, _, _, _ = get_drr(vert_tissue_Dir, offset_trans, 'lar', tissue=True)
-    _, drr_gene, ap_true_params, gt_rotations, gt_translations = get_drr(vert_Dir, offset_trans, 'ap', tissue=True)
-    # ap_x_line_path = 'Data/gncc_data/tuodao/bimeihua/X/pzp_ap_L3_line.nii.gz'
-    # la_x_line_path = 'Data/gncc_data/tuodao/bimeihua/X/pzp_la_L3_line.nii.gz'
-    ap_x_ray_path = 'Data/gncc_data/tuodao/dingjunmei/X/djm_resized_ap.nii.gz'
-    la_x_ray_path = 'Data/gncc_data/tuodao/dingjunmei/X/djm_resized_la.nii.gz'
-    ap_mask_path = 'Data/gncc_data/tuodao/dingjunmei/X/djm_resized_ap_L2_bbx.nii.gz'
-    la_mask_path = 'Data/gncc_data/tuodao/dingjunmei/X/djm_resized_la_L2_bbx.nii.gz'
-    ap_mask = reader(ap_mask_path)
-    la_mask = reader(la_mask_path)
-    ap_xray = reader(ap_x_ray_path)
-    la_xray = reader(la_x_ray_path)
-    # gt_ap, _, _, _, _ = get_drr(ct_Dir)
-    # gt_la, _, _, _, _ = get_drr(ct_Dir, poseture='lar', tissue=True)
-    # out_ap_gt = torch.permute(gt_ap, (0, 1, 3, 2))
-    # out_la_gt = torch.permute(gt_la, (0, 1, 3, 2))
-    # out_ap = sitk.GetImageFromArray(out_ap_gt.squeeze().detach().cpu().numpy())
-    # sitk.WriteImage(out_ap, 'Data/diff_lines/pzp_L3_ap_gt.nii.gz')
-    # out_bg = sitk.GetImageFromArray(out_la_gt.squeeze().detach().cpu().numpy())
-    # sitk.WriteImage(out_bg, 'Data/gncc_data/exp2024.3.27/dualView/{name}_la_gt.nii.gz'.format(name=case_name))
-    # sitk.WriteImage(out_la, 'Data/diff_lines/pzp_L3_la_gt.nii.gz')
-    # ap_gt_line = infer_method(ap_vert_gt)
-    # ap_gt_line = torch.argmax(ap_gt_line, dim=1)
-    # print(ap_gt_line.shape)
-    # la_gt_line = infer_method(la_vert_gt)
-    # la_gt_line = torch.argmax(la_gt_line, dim=1)
-    # print(la_gt_line.shape)
+    offsetx, offsety, offsetz, vert_img = crop_ct_vert(origin_ct_path, seg_path, save_dir)
+    offset_trans = np.array([-offsetx, offsety, offsetz])
+    ap_gt, cropped_spacing = preliminary_process(xray_paths[0], boundingbox_paths[0], x_dirs[0])
+    la_gt, _ = preliminary_process(xray_paths[1], boundingbox_paths[1], x_dirs[1])
+    # gt_mask = torch.tensor(x_mask_arr)
+    # gt_mask = torch.unsqueeze(gt_mask, dim=0).to(device)
+    # gt_mask = torch.unsqueeze(gt_mask, dim=0).to(device)
+    # gt_mask = torch.permute(gt_mask, (0, 1, 3, 2))
+    ap_line = line_preprocess(line_paths[0])
+    img_center = np.array([-3.9975469970703125e+02, 1.5983113098144531e+02, 8.2500099182128906e+01])
+    xray_center = np.array([7.0934796142578125e+02, -1.8016872406005859e+01, 8.2500099182128906e+01])
+    SDR = np.sqrt(np.sum((img_center - xray_center) ** 2))
+    print(SDR / 2)
+    used_gt, drr_gene, true_params, ini_rot, ini_trans = get_drr(cam_wld, img_meta=vert_img,
+                                                                 SDR=SDR / 2,
+                                                                 DELX=cropped_spacing,
+                                                                 offset_trans=offset_trans,
+                                                                 tissue=True)
     scaleInen = ScaleIntensity()
-    ap_vert_gt = scaleInen(ap_xray[0])
-    la_vert_gt = scaleInen(la_xray[0])
-    ap_vert_gt = torch.unsqueeze(ap_vert_gt, dim=0).to(device)
-    la_vert_gt = torch.unsqueeze(la_vert_gt, dim=0).to(device)
-    ap_mask_gt = torch.unsqueeze(ap_mask[0][:, :, :, 0], dim=0).to(device)
-    la_mask_gt = torch.unsqueeze(la_mask[0][:, :, :, 0], dim=0).to(device)
-    # ap_gt_line = ap_x_line[0][:, :, :, 0]
-    # la_gt_line = la_x_line[0][:, :, :, 0]
-    # 随机变换待配准椎骨的初始位姿
-    # ap_ini_rotations, ap_ini_translations = get_initial_parameters(ap_true_params, device)
     mov_drr = drr_gene(
-        gt_rotations,
-        gt_translations,
+        ini_rot,
+        ini_trans,
         parameterization="euler_angles",
-        convention="ZYX",
+        convention="ZYX"
     )
+    print(mov_drr.shape)
     ini_drr = torch.permute(mov_drr, (0, 1, 3, 2))
-    print(ap_mask_gt.shape)
-    bbx_gt = torch.permute(ap_mask_gt, (0, 1, 3, 2))
-    # bbx_gt = torch.permute(ap_vert_gt, (0, 1, 3, 2))
+    bbx_gt = torch.permute(ap_gt, (0, 1, 3, 2))
+    # print(bbx_gt.shape)
     # out_img = sitk.GetImageFromArray(ini_drr.squeeze().detach().cpu().numpy())
-    # sitk.WriteImage(out_img, 'Data/gncc_data/tuodao/peizongping/pzp_L3_ap_ini.nii.gz')
+    # sitk.WriteImage(out_img, 'Data/natong/case3/L5_mov.nii.gz')
     mov_line = infer_method(mov_drr)
     pred_mask = torch.argmax(mov_line, dim=1)
-    # line_tensor = torch.permute(ap_gt_line.unsqueeze(0), (0, 1, 3, 2))
-    pred_mask = torch.permute(pred_mask, (0, 2, 1))
-    coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
-    coarse_trans = torch.tensor([[coarse_x, 0, coarse_y-50]]).to(device)
-    ap_ini_translations = gt_translations + coarse_trans
-
+    # pred_mask = torch.permute(pred_mask.unsqueeze(0), (0, 1, 3, 2))
+    # line_tensor = torch.permute(gt_line, (0, 1, 3, 2))
+    # pred_mask = torch.permute(pred_mask, (0, 2, 1))
+    # print(ini_drr.shape)
+    # 90., 92., 255., 193.
+    # 128., 19., 255., 127.
+    # coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
+    # coarse_x, coarse_y = get_lineCenter_offset(ini_drr, bbx_gt)
+    # coarse_trans = torch.tensor([[coarse_x, 0, coarse_y]]).to(device)
+    # print(coarse_x, coarse_y)
+    # translations = gt_translations + coarse_trans
+    # translations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
+    # print(coarse_trans)
+    # print(gt_rotations)
+    # print(gt_translations)
     # 可以生成带梯度的drr图像
     coarse_reg = Registration(
         drr_gene,
-        gt_rotations.clone(),
-        ap_ini_translations.clone(),
+        ini_rot.clone(),
+        ini_trans.clone(),
         parameterization="euler_angles",
         convention="ZYX",
         dual_view=True
     )
-    coarse_drr = coarse_reg()
+    # coarse_drr = coarse_reg()
+    # coarse_drr = torch.permute(coarse_drr, (0, 1, 3, 2))
     plt.subplot(2, 2, 1)
-    plt.imshow(ap_vert_gt.squeeze().detach().cpu().numpy())
+    plt.imshow(ap_gt.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 2)
-    plt.imshow(mov_drr.squeeze().detach().cpu().numpy())
+    plt.imshow(la_gt.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 3)
-    plt.imshow(coarse_drr[0, :].squeeze().detach().cpu().numpy())
+    plt.imshow(pred_mask.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 4)
-    plt.imshow(coarse_drr[1, :].squeeze().detach().cpu().numpy())
+    plt.imshow(ap_line.squeeze().detach().cpu().numpy())
     plt.show()
-    # 双视图的位姿更新
-    gt_list = [ap_vert_gt, la_vert_gt]
-    # line_list = [ap_gt_line, la_gt_line]
-    mask_list = [ap_mask_gt, la_mask_gt]
-    optimize(coarse_reg, gt_list, case_name, scaleInen, gt_rotations, gt_translations, 0.01, 1e1, optimizer="adam", gt_lines=mask_list)
-    # params = optimize(reg, x_img_tensor, scaleInen, tensor_mask, 1e-2, 1e1, momentum=0.9, dampening=0.1)
+    plt.close()
+    # 优化算法
+    # optimize(drr_gene, [ap_gt, la_gt], ap_line, case_name, scaleInen, ini_rot, ini_trans)
+    optimize(coarse_reg, [ap_gt, la_gt], case_name, scaleInen, ini_rot, ini_trans, 0.01, 1e1, optimizer="adam")
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -204,12 +178,12 @@ def optimize(
         estimate = scaler(estimate)
         # print(estimate[0, :].unsqueeze(0).shape)
         # print(gt_imgs[0].shape)
-        ap_ncc_loss = NCC_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float(), gt_lines[0].float())
-        la_ncc_loss = NCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float(), gt_lines[1].float())
+        ap_ncc_loss = NCC_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
+        la_ncc_loss = NCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
         # ap_ssim_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
         # la_ssim_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-        # ap_gncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float(), gt_lines[0].float())
-        # la_gncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float(), gt_lines[1].float())
+        # ap_gncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
+        # la_gncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
         # ap_line_loss = NCC_loss(ap_pred_line[:, 1, :].unsqueeze(0).float(), gt_lines[0].unsqueeze(0).float())
         # la_line_loss = NCC_loss(la_pred_line[:, 1, :].unsqueeze(0).float(), gt_lines[1].unsqueeze(0).float())
         # loss = (ap_ncc_loss + la_ncc_loss) / 2 * 0.9 + (ap_gncc_loss + la_gncc_loss) / 2 * 0.1
@@ -251,7 +225,7 @@ def optimize(
     df["loss"] = losses
     print(df)
     # 用于存储pose，换视图训练，最好改名字
-    df.to_csv('results/tuodao/{}_dualview_pose.csv'.format(samplename), index=False)
+    df.to_csv('results/tuodao/{}_dualview_adam_pose.csv'.format(samplename), index=False)
     # return df
 
 
@@ -277,10 +251,25 @@ def animate_in_browser(df, max_length, drr_mov, gt):
         f.write("<html><body>")
         f.write(f"""<img src='{"data:img/gif;base64," + b64encode(out).decode()}'>""")
         f.write("</body></html>")
-
     print("HTML文件创建成功")
 
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    reg_method()
+    caseName = 'dukemei'
+    ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
+    vert_seg_path = 'Data/tuodao/{}/L3_seg.nii.gz'.format(caseName)
+    ap_gt_path = 'Data/tuodao/{}/X/dukemei_ap.nii.gz'.format(caseName)
+    ap_bbx_path = 'Data/tuodao/{}/X/L3_bbx_ap.nii.gz'.format(caseName)
+    la_gt_path = 'Data/tuodao/{}/X/dukemei_la.nii.gz'.format(caseName)
+    la_bbx_path = 'Data/tuodao/{}/X/L3_bbx_la.nii.gz'.format(caseName)
+    vert_save_path = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
+    resized_x_ap_save_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
+    resized_x_la_save_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
+    line_ap_path = 'Data/tuodao/{}/X/L3_line_ap.nii.gz'.format(caseName)
+    line_la_path = 'Data/tuodao/{}/X/L3_line_la.nii.gz'.format(caseName)
+    x_vect = np.array([1.5833039581775665e-01, 9.8738616704940796e-01, 0.0])
+    y_vect = np.array([0.0, 0.0, 1.0])
+    cam_mat = get_cam_wld_mat(x_vect, y_vect)
+    reg_method(ct_path, vert_seg_path, [ap_gt_path, la_gt_path], [ap_bbx_path, la_bbx_path], '{}_L3'.format(caseName),
+               vert_save_path, [resized_x_ap_save_path, resized_x_la_save_path], cam_mat, [line_ap_path, line_la_path])

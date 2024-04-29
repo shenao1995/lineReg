@@ -16,7 +16,7 @@ from diffdrr.metrics import NormalizedCrossCorrelation2d, GradientNormalizedCros
 from monai.networks.utils import one_hot
 from monai.metrics import DiceMetric, HausdorffDistanceMetric
 from torchvision.ops import masks_to_boxes
-from tools import gaussian_preprocess, resample_img
+from tools import gaussian_preprocess, resample_img, HE_optimize, crop_ct_vert
 
 
 def crop_image():
@@ -235,7 +235,7 @@ def read_xray_and_crop():
 
 
 def png2nii():
-    file_path = 'Data/tuodao/dingjunmei/X/x_la.tif'
+    file_path = 'Data/tuodao/bimeihua/X/x_la.tif'
     img = cv2.imread(file_path)
     img_new = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     # img_tensor = torch.tensor(img_new)
@@ -247,7 +247,7 @@ def png2nii():
     # resized_img = resample_img(out_img, new_width=256)
     print(out_img.GetSize())
     print(out_img.GetSpacing())
-    sitk.WriteImage(out_img, 'Data/tuodao/dingjunmei/X/dingjunmei_la.nii.gz')
+    sitk.WriteImage(out_img, 'Data/tuodao/bimeihua/X/bimeihua_la.nii.gz')
 
 
 def resize_img():
@@ -275,8 +275,12 @@ def resize_img():
 
 def generate_mov_drr():
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    n_drrs = 5000
-    ct_path = 'Data/gncc_data/tuodao/peizongping/peizongping_L3.nii.gz'
+    caseName = 'dukemei'
+    ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
+    vert_seg_path = 'Data/tuodao/{}/L3_seg.nii.gz'.format(caseName)
+    offsetx, offsety, offsetz, vert_img = crop_ct_vert(ct_path, vert_seg_path)
+    offset_trans = np.array([offsetx, offsety, offsetz])
+    n_drrs = 20
     save_fold = 'Data/dl_drr'
     csv_path = 'Data/pose1.csv'
     volume, spacing, true_params = get_true_drr(ct_path)
@@ -296,9 +300,9 @@ def generate_mov_drr():
         drr_moving = DRR(
             volume,
             spacing,
-            sdr=1200,
+            sdr=562.1456658219104,
             height=256,
-            delx=1.2,
+            delx=1.1266406741924584,
         ).to(device)
         for i in range(n_drrs):
             rx, ry, rz, tx, ty, tz = get_transform_parameters()
@@ -436,14 +440,27 @@ def correct_seg():
     sitk.WriteImage(out_seg, 'Data/tuodao/peizongping/L3_seg_temp.nii.gz')
 
 
+def optimize_xray():
+    xray_path = 'Data/tuodao/bimeihua/X/x_ap.tif'
+    img = cv2.imread(xray_path, cv2.IMREAD_GRAYSCALE)
+    img = np.max(img) - img
+    opt_xray = HE_optimize(xray_path)
+    # plt.subplot(1, 2, 1)
+    plt.imshow(img, cmap='gray')
+    plt.show()
+    # plt.subplot(1, 2, 2)
+    plt.imshow(opt_xray, cmap='gray')
+    plt.show()
+
+
 if __name__ == '__main__':
     # test_ncc()
-    png2nii()
+    # png2nii()
     # dcm2nii()
     # bbx_crop_gt_vert()
     # read_xray_and_crop()
     # generate_gt_drr()
-    # generate_mov_drr()
+    generate_mov_drr()
     # crop_image()
     # inverse_img()
     # crop_region()
@@ -451,3 +468,4 @@ if __name__ == '__main__':
     # seg_preprocess()
     # resize_img()
     # correct_seg()
+    # optimize_xray()

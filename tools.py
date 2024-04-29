@@ -1,5 +1,7 @@
 import os.path
-
+from skimage import exposure
+import skimage
+from PIL import Image
 import torch
 import numpy as np
 import nibabel as nib
@@ -11,85 +13,52 @@ import matplotlib.pyplot as plt
 from monai.transforms import Resize
 from torchvision.transforms.functional import center_crop, gaussian_blur
 import SimpleITK as sitk
-from diffdrr.pose import convert, RigidTransform
+from diffdrr.pose import convert, RigidTransform, matrix_to_euler_angles
+import xml.etree.ElementTree as ET
+from diffdrr.data import read
 
 
-def get_drr(img_path=None, img_meta=None, SDR=562.0, DELX=1.2, offset_trans=None, poseture='ap', device='cuda',
-            tissue=False):
+def get_drr(img_path=None, img_meta=None, mask_path=None, SDD=562.0, DELX=1.2, offset_trans=None, poseture='ap',
+            device='cuda', V2D_distance=0.0):
     if poseture == 'ap':
-        alpha = torch.pi / 2
-    elif poseture == 'lar':
         alpha = 0
-    else:
+    elif poseture == 'lar':
         alpha = torch.pi
-    # SDR = 562.0
+    else:
+        alpha = torch.pi / 2
     HEIGHT = 256
-    # DELX = 1.1266406741924584
     if img_path:
-        ct_img = sitk.ReadImage(img_path)
-        volume = sitk.GetArrayFromImage(ct_img)
+        subject = read(img_path, bone_attenuation_multiplier=10.5)
     else:
         ct_img = img_meta
         volume = sitk.GetArrayFromImage(ct_img)
         volume = volume.astype(float)
-    volume = np.swapaxes(volume, 2, 0)
-    spacing = ct_img.GetSpacing()
-    spacing = np.array(spacing)
-    bx, by, bz = torch.tensor(volume.shape) * torch.tensor(spacing) / 2
     # 获得初始位姿，其中bxbybz后面是偏移量，裁剪完椎骨后需要的
     if offset_trans is None:
-        drr_params = {
-            "sdr": SDR,
-            "alpha": alpha,  # 沿y轴旋转,逆时针旋转
-            "beta": 0,  # 沿x轴旋转
-            "gamma": torch.pi,  # 沿z轴旋转
-            "bx": bx,  # 正数朝左移动
-            "by": by,  # 沿z轴平移
-            "bz": bz,  # 沿y轴平移, 正数为向下平移
-        }
+        ini_rotations = torch.tensor([[alpha, 0, 0]]).to(device)
+        ini_translations = torch.tensor([[0, V2D_distance, 0]]).to(device)
     else:
-        drr_params = {
-            "sdr": SDR,
-            "alpha": alpha,  # 沿y轴旋转,逆时针旋转
-            "beta": 0,  # 沿x轴旋转
-            "gamma": torch.pi,  # 沿z轴旋转
-            "bx": bx + offset_trans[0],  # 正数朝左移动
-            "by": by + offset_trans[1],  # 沿z轴平移
-            "bz": bz + offset_trans[2],  # 沿y轴平移, 正数为向下平移
-        }
+        ini_rotations = torch.tensor([[alpha, 0, 0]]).to(device)
+        ini_translations = torch.tensor([[offset_trans[0], V2D_distance+offset_trans[1], offset_trans[2]]]).to(device)
     # volume = vert_img.get_fdata()
-    if not tissue:
-        process_volume = (volume - volume.min()) / (volume.max() - volume.min())
-    else:
-        process_volume = volume
+    # if not tissue:
+    #     process_volume = (volume - volume.min()) / (volume.max() - volume.min())
+    # else:
+    #     process_volume = volume
     # print(volume.shape)
     # drr生成器
-    drr = DRR(process_volume, spacing, sdr=SDR, height=HEIGHT, delx=DELX, bone_attenuation_multiplier=1.0).to(device)
-    gt_rotations = torch.tensor(
-        [
-            [
-                drr_params["alpha"],
-                drr_params["beta"],
-                drr_params["gamma"],
-            ]
-        ]
-    ).to(device)
-    gt_translations = torch.tensor(
-        [
-            [
-                drr_params["bx"],
-                drr_params["by"],
-                drr_params["bz"],
-            ]
-        ]
-    ).to(device)
-    drr_img = drr(
-        gt_rotations,
-        gt_translations,
-        parameterization="euler_angles",
-        convention="ZYX",
-    )
-    return drr_img, drr, drr_params, gt_rotations, gt_translations
+    drr = DRR(subject, sdd=SDD, height=HEIGHT, delx=DELX).to(device)
+    # cam_pose = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZYX")
+    # extrinsic_update = (cam_pose.compose(wld_extrinsic))
+    # drr_img = drr(
+    #     extrinsic_update
+    # )
+    # # print(extrinsic_update.matrix[0, :3, 3:].T)
+    # update_translation = extrinsic_update.matrix[0, :3, 3:].T
+    # update_rotation = matrix_to_euler_angles(extrinsic_update.matrix[0, :3, :3], convention='ZYX')
+    # update_rotation = update_rotation.unsqueeze(0)
+
+    return drr
 
 
 def get_initial_parameters(true_params, used_device):
@@ -140,7 +109,7 @@ def read_bg_img(img_path, reader, isResize=False):
     return rgb_gt
 
 
-def extract_img_overlay(img, sigma=1.5, eps=1e-5):
+def extract_img_overlay(img, sigma=1.0, eps=1e-5):
     img_normalized = cv2.normalize(img, None, 0, 255.0,
                                    cv2.NORM_MINMAX, dtype=cv2.CV_32F)
     # thresh = cv2.Canny(np.uint8(img_normalized), 1, 150)
@@ -190,9 +159,7 @@ def gaussian_preprocess(img, cropped=False, size=None, initial_energy=torch.tens
     return img
 
 
-def crop_ct_vert(img_path, mask_path, save_path):
-    # print(img_path)
-    # print(vert_num)
+def crop_ct_vert(img_path, mask_path, save_path=None):
     img = sitk.ReadImage(img_path)
     ct_arr = sitk.GetArrayFromImage(img)
     # normalized_arr = (ct_arr - ct_arr.min()) / (ct_arr.max() - ct_arr.min())
@@ -240,10 +207,13 @@ def crop_ct_vert(img_path, mask_path, save_path):
     # seg_save_path = os.path.join(seg_save_fold, os.path.split(mask_path)[-1])
     # # print(save_path)
     # # print(seg_save_path)
-    if not os.path.exists(save_path):
-        sitk.WriteImage(cropped_img, save_path)
+    if save_path:
+        if not os.path.exists(save_path):
+            sitk.WriteImage(cropped_img, save_path)
+    else:
+        pass
     # sitk.WriteImage(cropped_mask, seg_save_path)
-    return bx, by, bz, cropped_img
+    return bx, by, bz, cropped_img, save_path
 
 
 def resample_img(input_img, new_width=None, save_path=None, interpolator_method=sitk.sitkLinear):
@@ -305,8 +275,6 @@ def bbx_crop_gt_vert(img, mask, inverse=True):
             img_arr = np.max(img_arr) - img_arr[0, :, :]
         else:
             img_arr = np.max(img_arr) - img_arr
-    mask_arr = sitk.GetArrayFromImage(mask)
-    mask = sitk.GetImageFromArray(mask_arr)
     lesion_filter = sitk.LabelShapeStatisticsImageFilter()
     lesion_filter.Execute(mask)
     lesion_boxing = lesion_filter.GetBoundingBox(1)
@@ -321,3 +289,82 @@ def bbx_crop_gt_vert(img, mask, inverse=True):
     # save_path = os.path.join(gt_vert_save_fold, seg)
     # print(save_path)
     # print(seg_save_path)
+
+
+def HE_optimize(img):
+    # img = cv2.imread(file, cv2.IMREAD_GRAYSCALE)
+    img = np.max(img) - img
+    # 添加噪声
+    # noisy = skimage.util.random_noise(img, mode='gaussian', var=0.01)
+    # img_HE = img + noisy
+
+    # 基础的HE方式效果并不好
+    # img_HE = cv2.equalizeHist(img)
+
+    # AHE方法
+    # img1 = exposure.equalize_adapthist(img)
+    # img_AHE = Image.fromarray(np.uint8(img1 * 255))
+    # img_AHE = np.array(img_AHE)
+
+    # CLAHE方法
+    clahe = cv2.createCLAHE(clipLimit=2, tileGridSize=(10, 10))
+    img_CLAHE = clahe.apply(img)
+    # 添加噪声，高斯
+    noisyCLAHE = skimage.util.random_noise(img_CLAHE, mode='gaussian', var=0.05)
+    img_CLAHE_g = img_CLAHE + noisyCLAHE
+    # 泊松
+    noisyCLAHE2 = skimage.util.random_noise(img_CLAHE, mode='poisson', clip=True)
+    img_CLAHE_p = img_CLAHE + noisyCLAHE2
+    # 尝试其他参数进行调参
+    # clahe2 = cv2.createCLAHE(clipLimit=2, tileGridSize=(4, 4))
+    # img_CLAHE2 = clahe2.apply(img)
+    # 演示效果
+    # plot_show_n(img, img_CLAHE, img_CLAHE_g, img_CLAHE_p)
+    # 返回修改后的图像
+    # print("ready to write new picture")
+    # dir_name = "D:\\xregAPI\\spatial_data2024\\tuodao_ceshi\\xray\\pzp_la60_HE.png"
+    # cv2.imwrite(dir_name, img_CLAHE_g)
+    return img_CLAHE_p
+
+
+def read_xml(xml_path):
+    # 读取XML文件
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    # 打印根元素的名称
+    ImgCenterWld = root[2].text.lstrip().split(' ')
+    XrayCenterWld = root[4].text.lstrip().split(' ')
+    ImgXdir = root[5].text.lstrip().split(' ')
+    ImgYdir = root[6].text.lstrip().split(' ')
+    X_Spacing = float(root[0].text.lstrip())
+    img_center = np.array([float(ImgCenterWld[0]), float(ImgCenterWld[1]), float(ImgCenterWld[2])])
+    xray_center = np.array([float(XrayCenterWld[0]), float(XrayCenterWld[1]), float(XrayCenterWld[2])])
+    SDD = np.sqrt(np.sum((img_center - xray_center) ** 2))
+    Xray_H = root[3].text.lstrip().split(' ')[0]
+    return ImgXdir, ImgYdir, X_Spacing, SDD, Xray_H, XrayCenterWld
+
+
+def get_ext_pose(Xdir, Ydir, V2D_distance, transform_vect, offset_trans=None, device='cuda'):
+    # 获得初始位姿，其中bxbybz后面是偏移量，裁剪完椎骨后需要的
+    if offset_trans is None:
+        ini_rotations = transform_vect[:, :3]
+        # print(ini_rotations)
+        ini_translations = transform_vect[:, 3:] + torch.tensor([[0, V2D_distance, 0]]).to(device)
+    else:
+        offset_tensor = torch.from_numpy(offset_trans).unsqueeze(0).to(device)
+        # print(offset_tensor)
+        ini_rotations = transform_vect[:, :3]
+        ini_translations = transform_vect[:, 3:] + offset_tensor + torch.tensor([[0, V2D_distance, 0]]).to(device)
+    pose_unfixed = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
+    x_dir = np.array([float(Xdir[0]), float(Xdir[1]), float(Xdir[2])])
+    y_dir = np.array([float(Ydir[0]), float(Ydir[1]), float(Ydir[2])])
+    z_dir = np.cross(x_dir, y_dir)
+    wld_extrinsic_R = np.array([x_dir, z_dir, y_dir])
+    wld_extrinsic_T = np.array([0, 0, 0]).reshape(3, 1)
+    wld_extrinsic = np.concatenate((wld_extrinsic_R, wld_extrinsic_T.reshape(3, 1)), axis=1)
+    wld_extrinsic = np.vstack((wld_extrinsic, np.array([0.0, 0.0, 0.0, 1.0])))
+    wld_extrinsic = torch.FloatTensor(wld_extrinsic)
+    wld_extrinsic = RigidTransform(wld_extrinsic).to(device)
+    # print(pose_unfixed.matrix)
+    extrinsic_update = (pose_unfixed.compose(wld_extrinsic))
+    return extrinsic_update
