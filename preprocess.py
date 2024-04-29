@@ -13,10 +13,11 @@ from monai.transforms import Resize
 import nibabel as nib
 import csv
 from diffdrr.metrics import NormalizedCrossCorrelation2d, GradientNormalizedCrossCorrelation2d
+from diffdrr.data import read
 from monai.networks.utils import one_hot
 from monai.metrics import DiceMetric, HausdorffDistanceMetric
 from torchvision.ops import masks_to_boxes
-from tools import gaussian_preprocess, resample_img, HE_optimize, crop_ct_vert
+from tools import gaussian_preprocess, resample_img, HE_optimize, crop_ct_vert, read_xml, get_ext_pose
 
 
 def crop_image():
@@ -275,81 +276,52 @@ def resize_img():
 
 def generate_mov_drr():
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    caseName = 'dukemei'
+    caseName = 'peizongping'
+    vert_num = 'L3'
     ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
-    vert_seg_path = 'Data/tuodao/{}/L3_seg.nii.gz'.format(caseName)
-    offsetx, offsety, offsetz, vert_img = crop_ct_vert(ct_path, vert_seg_path)
+    vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
+    ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
+    la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
+    vert_save_path = 'Data/tuodao/{}/{}_{}.nii.gz'.format(caseName, caseName, vert_num)
+    offsetx, offsety, offsetz, _, _ = crop_ct_vert(ct_path, vert_seg_path, vert_save_path)
     offset_trans = np.array([offsetx, offsety, offsetz])
+    ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(ap_xml_path)
+    la_Xdir, la_Ydir, la_spacing, _, _, la_Wld_Offset = read_xml(la_xml_path)
+    subject = read(vert_save_path, bone_attenuation_multiplier=10.5)
+    DELX = 1.1574750505387783
+    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX).to(device)
     n_drrs = 20
     save_fold = 'Data/dl_drr'
-    csv_path = 'Data/pose1.csv'
-    volume, spacing, true_params = get_true_drr(ct_path)
-    with open(csv_path, "w", newline='') as f:
-        writer = csv.writer(f, delimiter=",")
-        writer.writerow(
-            [
-                "name",
-                "rx",
-                "ry",
-                "rz",
-                "tx",
-                "ty",
-                "tz",
-            ]
+    for i in range(n_drrs):
+        rx, ry, rz, tx, ty, tz = get_transform_parameters()
+        pose = (
+            torch.tensor([[rx, ry, rz, tx, ty, tz]]).to(device)
         )
-        drr_moving = DRR(
-            volume,
-            spacing,
-            sdr=562.1456658219104,
-            height=256,
-            delx=1.1266406741924584,
-        ).to(device)
-        for i in range(n_drrs):
-            rx, ry, rz, tx, ty, tz = get_transform_parameters()
-            writer.writerow([str(i), rx, ry, rz, tx, ty, tz])
-            mov_rot = torch.tensor([[true_params["rx"] + rx, true_params["ry"] + ry, true_params["rz"] + rz]],
-                                   device=device)
-            mov_trans = torch.tensor([[true_params["tx"] + tx, true_params["ty"] + ty, true_params["tz"] + tz]],
-                                     device=device)
-            moving_drr = drr_moving(mov_rot, mov_trans, parameterization="euler_angles", convention="ZYX")
-            moving_drr = torch.permute(moving_drr, (0, 1, 3, 2))
-            moving_drr = moving_drr.squeeze().cpu().numpy()
-            # plt.imsave('Data/moving_drr/chazhilin_moving_{num}.png'.format(num=str(i)), moving_drr, cmap='gray')
-            moving_img = sitk.GetImageFromArray(moving_drr)
-            save_path = os.path.join(save_fold, 'ap_' + str(i) + '.nii.gz')
-            sitk.WriteImage(moving_img, save_path)
-
-
-def get_true_drr(img_path):
-    """Get parameters for the fixed DRR."""
-    np.random.seed(88)
-    SDR = 1200.0
-    origin_img = nib.load(img_path)
-    spacing = origin_img.header.get_zooms()
-    spacing = np.array((spacing[0], spacing[1], spacing[2]), dtype=np.float64)
-    bx, by, bz = torch.tensor(origin_img.shape) * torch.tensor(spacing) / 2
-    true_params = {
-        "sdr": SDR,
-        "rx": torch.pi / 2,  # 沿y轴旋转，正数是逆时针旋转，0是右，torch.pi是左
-        "ry": 0,
-        "rz": torch.pi,  # 沿z轴旋转
-        "tx": bx,
-        "ty": by,  # 沿z轴平移
-        "tz": bz,  # 沿y轴平移
-    }
-    return origin_img.get_fdata(), spacing, true_params
+        ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, float(ap_Wld_Offset[1]), pose.float(), offset_trans)
+        la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, float(la_Wld_Offset[0]), pose.float(), offset_trans)
+        dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
+        moving_drr = drr_generator(dual_pose, parameterization="matrix")
+        # moving_drr = torch.permute(moving_drr, (0, 1, 3, 2))
+        ap_drr = moving_drr[0, :].squeeze().cpu().numpy()
+        la_drr = moving_drr[1, :].squeeze().cpu().numpy()
+        ap_img = sitk.GetImageFromArray(ap_drr)
+        save_path = os.path.join(save_fold, caseName + '_' + vert_num + '_ap_' + str(i) + '.nii.gz')
+        sitk.WriteImage(ap_img, save_path)
+        la_img = sitk.GetImageFromArray(la_drr)
+        save_path = os.path.join(save_fold, caseName + '_' + vert_num + '_la_' + str(i) + '.nii.gz')
+        sitk.WriteImage(la_img, save_path)
 
 
 def get_transform_parameters():
-    rot_range = 18
+    rot_range = 9
     trans_range = 20.0
     """Get starting parameters for the moving DRR by perturbing the true params."""
     rx = np.random.uniform(-np.pi / rot_range, np.pi / rot_range)
     ry = np.random.uniform(-np.pi / rot_range, np.pi / rot_range)
     rz = np.random.uniform(-np.pi / rot_range, np.pi / rot_range)
     tx = np.random.uniform(-trans_range, trans_range)
-    ty = np.random.uniform(-trans_range, trans_range)
-    tz = np.random.uniform(-10, 40)
+    ty = np.random.uniform(-50, 50)
+    tz = np.random.uniform(-trans_range, trans_range)
     return rx, ry, rz, tx, ty, tz
 
 

@@ -348,6 +348,7 @@ def get_ext_pose(Xdir, Ydir, V2D_distance, transform_vect, offset_trans=None, de
     # 获得初始位姿，其中bxbybz后面是偏移量，裁剪完椎骨后需要的
     if offset_trans is None:
         ini_rotations = transform_vect[:, :3]
+        # ini_rotations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
         # print(ini_rotations)
         ini_translations = transform_vect[:, 3:] + torch.tensor([[0, V2D_distance, 0]]).to(device)
     else:
@@ -355,7 +356,7 @@ def get_ext_pose(Xdir, Ydir, V2D_distance, transform_vect, offset_trans=None, de
         # print(offset_tensor)
         ini_rotations = transform_vect[:, :3]
         ini_translations = transform_vect[:, 3:] + offset_tensor + torch.tensor([[0, V2D_distance, 0]]).to(device)
-    pose_unfixed = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
+    # pose_unfixed = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
     x_dir = np.array([float(Xdir[0]), float(Xdir[1]), float(Xdir[2])])
     y_dir = np.array([float(Ydir[0]), float(Ydir[1]), float(Ydir[2])])
     z_dir = np.cross(x_dir, y_dir)
@@ -365,6 +366,21 @@ def get_ext_pose(Xdir, Ydir, V2D_distance, transform_vect, offset_trans=None, de
     wld_extrinsic = np.vstack((wld_extrinsic, np.array([0.0, 0.0, 0.0, 1.0])))
     wld_extrinsic = torch.FloatTensor(wld_extrinsic)
     wld_extrinsic = RigidTransform(wld_extrinsic).to(device)
-    # print(pose_unfixed.matrix)
-    extrinsic_update = (pose_unfixed.compose(wld_extrinsic))
-    return extrinsic_update
+    update_rotation = matrix_to_euler_angles(wld_extrinsic.matrix[0, :3, :3], convention='ZXY').unsqueeze(0)
+    # print(update_rotation)
+    ini_rotations = ini_rotations - update_rotation.unsqueeze(0)
+    zero = torch.tensor([[0.0, 0.0, 0.0]]).to(ini_rotations)
+    R = convert(
+        ini_rotations,
+        zero,
+        parameterization="euler_angles",
+        convention="ZXY",
+    )
+    t = convert(
+        zero,
+        ini_translations,
+        parameterization="euler_angles",
+        convention="ZXY",
+    )
+    pose_update = t.compose(R)
+    return pose_update

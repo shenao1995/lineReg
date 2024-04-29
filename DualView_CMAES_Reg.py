@@ -167,25 +167,25 @@ def optimize(
                                                   device=device), 0)
             # print(x_eval)
             ap_extrinsic_update = get_ext_pose(ap_cam_param[0], ap_cam_param[1], ap_cam_param[2], x_eval)
-            # la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval)
+            la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval)
             # print(ap_extrinsic_update.matrix.shape)
-            # dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
-            # estimate = reg(dual_pose, parameterization="matrix")
-            ap_estimate = reg(ap_extrinsic_update)
+            dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
+            estimate = reg(dual_pose, parameterization="matrix")
+            # ap_estimate = reg(ap_extrinsic_update)
             # la_estimate = reg(la_extrinsic_update)
             # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
-            ap_input = torch.permute(ap_estimate, (0, 1, 3, 2))
+            ap_input = torch.permute(estimate[0, :].unsqueeze(0), (0, 1, 3, 2))
             ap_pred_line = infer_method(ap_input)
             # print(gt_lines.shape)
             # print(ap_pred_line.shape)
             line_loss = DCE_loss(ap_pred_line, gt_lines)
-            ap_ncc_loss = GNCC_loss(ap_estimate, gt_imgs[0].float())
-            # la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
+            ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
+            la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2 * 0.9 + 0.1 * line_loss
+            ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2 * 0.9 + 0.1 * line_loss
             # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            ncc_loss = ap_ncc_loss * 0.9 + 0.1 * line_loss
+            # ncc_loss = ap_ncc_loss * 0.9 + 0.1 * line_loss
             # ncc_loss = ap_ncc_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), ncc_loss.detach().squeeze().cpu().numpy()))
             # print(line_loss.item())
@@ -223,7 +223,7 @@ def optimize(
             print('配准耗时为:%.4s秒' % (T2 - T1))
             break
     # out_estimate = torch.permute(estimate[0, :], (0, 2, 1))
-    out_img = sitk.GetImageFromArray(ap_estimate.squeeze().detach().cpu().numpy())
+    out_img = sitk.GetImageFromArray(estimate[0, :].squeeze().detach().cpu().numpy())
     out_img = resample_img(out_img, new_width=976)
     out_arr = sitk.GetArrayFromImage(out_img)
     out_arr = np.where(out_arr != 0, 1, 0)
