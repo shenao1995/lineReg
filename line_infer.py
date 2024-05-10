@@ -26,11 +26,14 @@ import SimpleITK as sitk
 # import monai
 
 
-def infer_method(input_tensor=None, img_list=None):
+def infer_method(input_tensor=None, input_list=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     input_size = 256
     img_size = 256
-    img_list = [torch.squeeze(input_tensor).to(device)]
+    if input_tensor:
+        img_list = [torch.squeeze(input_tensor).to(device)]
+    else:
+        img_list = input_list
     log_dir = 'line_model/AttUNet_model1.pth'
     # img_list = [img]
     test_files = [{"img": Img}
@@ -39,7 +42,7 @@ def infer_method(input_tensor=None, img_list=None):
     infer_transforms = Compose(
         [
             # LoadImaged(keys=keys),
-            EnsureChannelFirstd(keys=keys, channel_dim='no_channel'),
+            EnsureChannelFirstd(keys=keys, channel_dim="no_channel"),
             Resized(keys=keys, spatial_size=(256, 256), mode='bilinear',
                     align_corners=True),
             ScaleIntensityd(keys=keys),
@@ -50,7 +53,7 @@ def infer_method(input_tensor=None, img_list=None):
     # save_path = 'output/xjt_4'
     # define dataset and dataloader
     test_ds = Dataset(data=test_files, transform=infer_transforms)
-    test_loader = DataLoader(test_ds, batch_size=1, num_workers=0, collate_fn=list_data_collate)
+    test_loader = DataLoader(test_ds, batch_size=2, num_workers=0, collate_fn=list_data_collate)
     # post_trans = Compose([Activations(softmax=True), AsDiscrete(argmax=True), RemoveSmallObjects(min_size=10)])
     # post_trans = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.5), RemoveSmallObjects(min_size=60), Flip(spatial_axis=0)])
     # saver = SaveImage(output_dir="./output", output_ext=".nii", output_postfix="seg",
