@@ -130,8 +130,8 @@ def optimize(
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            gncc_loss = ap_ncc_loss
+            gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
+            # gncc_loss = ap_ncc_loss
             total_loss = gncc_loss
             # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
             # ncc_loss = ap_ncc_loss * 0.9 + 0.1 * line_loss
