@@ -313,7 +313,7 @@ def generate_mov_drr():
 
 
 def get_transform_parameters():
-    rot_range = 9
+    rot_range = 18
     trans_range = 20.0
     """Get starting parameters for the moving DRR by perturbing the true params."""
     rx = np.random.uniform(-np.pi / rot_range, np.pi / rot_range)

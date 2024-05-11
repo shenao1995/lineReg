@@ -39,7 +39,7 @@ def get_drr(img_path=None, img_meta=None, mask_path=None, SDD=562.0, DELX=1.2, o
         ini_translations = torch.tensor([[0, V2D_distance, 0]]).to(device)
     else:
         ini_rotations = torch.tensor([[alpha, 0, 0]]).to(device)
-        ini_translations = torch.tensor([[offset_trans[0], V2D_distance+offset_trans[1], offset_trans[2]]]).to(device)
+        ini_translations = torch.tensor([[offset_trans[0], V2D_distance + offset_trans[1], offset_trans[2]]]).to(device)
     # volume = vert_img.get_fdata()
     # if not tissue:
     #     process_volume = (volume - volume.min()) / (volume.max() - volume.min())
@@ -47,7 +47,7 @@ def get_drr(img_path=None, img_meta=None, mask_path=None, SDD=562.0, DELX=1.2, o
     #     process_volume = volume
     # print(volume.shape)
     # drr生成器
-    drr = DRR(subject, sdd=SDD, height=HEIGHT, delx=DELX).to(device)
+    drr = DRR(subject, sdd=SDD, height=HEIGHT, delx=DELX, reverse_x_axis=False).to(device)
     # cam_pose = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZYX")
     # extrinsic_update = (cam_pose.compose(wld_extrinsic))
     # drr_img = drr(
@@ -339,48 +339,90 @@ def read_xml(xml_path):
     X_Spacing = float(root[0].text.lstrip())
     img_center = np.array([float(ImgCenterWld[0]), float(ImgCenterWld[1]), float(ImgCenterWld[2])])
     xray_center = np.array([float(XrayCenterWld[0]), float(XrayCenterWld[1]), float(XrayCenterWld[2])])
+    # Wld_T = img_center - xray_center
     SDD = np.sqrt(np.sum((img_center - xray_center) ** 2))
-    Xray_H = root[3].text.lstrip().split(' ')[0]
-    return ImgXdir, ImgYdir, X_Spacing, SDD, Xray_H, XrayCenterWld
+    Xray_H = int(root[3].text.lstrip().split(' ')[0])
+    return ImgXdir, ImgYdir, X_Spacing, SDD, Xray_H, xray_center
 
 
-def get_ext_pose(Xdir, Ydir, V2D_distance, transform_vect, offset_trans=None, device='cuda'):
+def get_ext_pose(Xdir, Ydir, V2D_distance, init_pose, view='ap', offset_trans=None, device='cuda'):
     # 获得初始位姿，其中bxbybz后面是偏移量，裁剪完椎骨后需要的
+    V2D_distance[2] = 0
     if offset_trans is None:
-        ini_rotations = transform_vect[:, :3]
-        # ini_rotations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
-        # print(ini_rotations)
-        ini_translations = transform_vect[:, 3:] + torch.tensor([[0, V2D_distance, 0]]).to(device)
+        if view == 'ap':
+            ini_rotations = init_pose[:, :3]
+            # ini_rotations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
+            # print(transform_vect[:, 3:])
+            ini_translations = init_pose[:, 3:] + torch.tensor([[0, 700, 0]]).to(device)
+            V2D_distance[1], V2D_distance[0] = V2D_distance[0], V2D_distance[1]
+        else:
+            ini_rotations = init_pose[:, :3]
+            # ini_rotations = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
+            # print(transform_vect[:, 1])
+            ini_translations = torch.tensor([[init_pose[:, 4] + 68, init_pose[:, 3],
+                                              init_pose[:, 5]]]).to(device) + torch.tensor([[0, 700, 0]]).to(device)
+            # V2D_distance[1], V2D_distance[0], V2D_distance[2] = V2D_distance[0], V2D_distance[1], 0
+
     else:
-        offset_tensor = torch.from_numpy(offset_trans).unsqueeze(0).to(device)
-        # print(offset_tensor)
-        ini_rotations = transform_vect[:, :3]
-        ini_translations = transform_vect[:, 3:] + offset_tensor + torch.tensor([[0, V2D_distance, 0]]).to(device)
+        if view == 'ap':
+            offset_tensor = torch.from_numpy(offset_trans).unsqueeze(0).to(device)
+            # print(offset_tensor)
+            ini_rotations = init_pose[:, :3]
+            ini_translations = init_pose[:, 3:] + offset_tensor + torch.tensor([[0, 700, 0]]).to(device)
+        else:
+            offset_tensor = torch.from_numpy(offset_trans).unsqueeze(0).to(device)
+            # print(offset_tensor)
+            ini_rotations = init_pose[:, :3]
+            ini_translations = torch.tensor([[init_pose[:, 4], init_pose[:, 3],
+                                              init_pose[:, 5]]]).to(device) + \
+                               offset_tensor + torch.tensor([[0, 700, 0]]).to(device)
     # pose_unfixed = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
     x_dir = np.array([float(Xdir[0]), float(Xdir[1]), float(Xdir[2])])
     y_dir = np.array([float(Ydir[0]), float(Ydir[1]), float(Ydir[2])])
     z_dir = np.cross(x_dir, y_dir)
     wld_extrinsic_R = np.array([x_dir, z_dir, y_dir])
-    wld_extrinsic_T = np.array([0, 0, 0]).reshape(3, 1)
-    wld_extrinsic = np.concatenate((wld_extrinsic_R, wld_extrinsic_T.reshape(3, 1)), axis=1)
+    # wld_extrinsic_R = torch.FloatTensor(wld_extrinsic_R)
+    # wld_extrinsic_R = RigidTransform(wld_extrinsic_R).to(device)
+    # wld_extrinsic_T = np.array([0, 0, 0]).reshape(3, 1)
+    wld_extrinsic_T = V2D_distance.reshape(3, 1)
+    # print(wld_extrinsic_T)
+    # wld_extrinsic_R = torch.FloatTensor(wld_extrinsic_R)
+    # wld_extrinsic_R = RigidTransform(wld_extrinsic_R).to(device)
+    wld_extrinsic = np.concatenate((wld_extrinsic_R, wld_extrinsic_T), axis=1)
     wld_extrinsic = np.vstack((wld_extrinsic, np.array([0.0, 0.0, 0.0, 1.0])))
     wld_extrinsic = torch.FloatTensor(wld_extrinsic)
     wld_extrinsic = RigidTransform(wld_extrinsic).to(device)
     update_rotation = matrix_to_euler_angles(wld_extrinsic.matrix[0, :3, :3], convention='ZXY').unsqueeze(0)
-    # print(update_rotation)
-    ini_rotations = ini_rotations - update_rotation.unsqueeze(0)
+    ini_rotations = ini_rotations + update_rotation
+    # ini_translations = ini_translations + torch.from_numpy(V2D_distance).unsqueeze(0).to(device)
+    # print(ini_translations)
     zero = torch.tensor([[0.0, 0.0, 0.0]]).to(ini_rotations)
+    volume2wld_mat = torch.tensor(
+        [
+            [0.9877551794052124, 0.02449158765375614, 0.15407615900039673, -109.68846130371094],
+            [-0.007056186906993389, 0.9936026930809021, -0.11270549148321152, -51.7974739074707],
+            [-0.15585069358348846, 0.11023829132318497, 0.9816099405288696, -13.808695793151855],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    volume2wld_mat = torch.FloatTensor(volume2wld_mat)
+    volume2wld_mat = RigidTransform(volume2wld_mat).to(device)
     R = convert(
         ini_rotations,
         zero,
         parameterization="euler_angles",
         convention="ZXY",
     )
+    # print(wld_extrinsic.inverse().matrix)
+    # print(R.matrix)
     t = convert(
         zero,
         ini_translations,
         parameterization="euler_angles",
         convention="ZXY",
     )
+    # print(wld_extrinsic.matrix[:, :, 3:])
+    cam_pose = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
     pose_update = t.compose(R)
+    # pose_update = convert(ini_rotations, ini_translations, parameterization="euler_angles", convention="ZXY")
     return pose_update

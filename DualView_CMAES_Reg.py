@@ -41,7 +41,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     la_Xdir, la_Ydir, la_spacing, _, _, la_Wld_Offset = read_xml(xml_paths[1])
     # offset_trans[0] = float(ap_Wld_Offset[1]) / SDD * offset_trans[0]
     # offset_trans[1] = float(ap_Wld_Offset[1]) / SDD * offset_trans[1]
-    print(offset_trans)
+    # print(offset_trans)
     ap_gt, cropped_spacing = preliminary_process(xray_paths[0], ap_spacing, boundingbox_paths[0], x_saves[0])
     la_gt, _ = preliminary_process(xray_paths[1], la_spacing, boundingbox_paths[1], x_saves[1])
     # gt_mask = torch.tensor(x_mask_arr)
@@ -49,10 +49,11 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     # gt_mask = torch.unsqueeze(gt_mask, dim=0).to(device)
     # gt_mask = torch.permute(gt_mask, (0, 1, 3, 2))
     ap_line = line_preprocess(line_paths[0])
+    la_line = line_preprocess(line_paths[1])
     ini_pose = torch.zeros(1, 6).to(device)
     # print(ini_pose.shape)
-    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, float(ap_Wld_Offset[1]), ini_pose, offset_trans)
-    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, float(la_Wld_Offset[0]), ini_pose, offset_trans)
+    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap', offset_trans=offset_trans)
+    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la', offset_trans=offset_trans)
     print(SDD)
     print(cropped_spacing)
     drr_gene = get_drr(img_path=vert_path,
@@ -62,14 +63,16 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     ap_ini_drr = drr_gene(ap_extrinsic_update)
     la_ini_drr = drr_gene(la_extrinsic_update)
     # print(ap_ini_drr.shape)
-    ini_drr = torch.permute(ap_ini_drr, (0, 1, 3, 2))
-    ap_gt = torch.permute(ap_gt, (0, 1, 3, 2))
+    infer_ap_drr = torch.permute(ap_ini_drr, (0, 1, 3, 2))
+    infer_la_drr = torch.permute(la_ini_drr, (0, 1, 3, 2))
+    # ap_gt = torch.permute(ap_gt, (0, 1, 3, 2))
     out_img = sitk.GetImageFromArray(ap_ini_drr.squeeze().detach().cpu().numpy())
     sitk.WriteImage(out_img, 'Data/tuodao/{}/L3_drr.nii.gz'.format(caseName))
-    la_gt = torch.permute(la_gt, (0, 1, 3, 2))
+    # la_gt = torch.permute(la_gt, (0, 1, 3, 2))
     # print(bbx_gt.shape)
-    mov_line = infer_method(ini_drr)
-    pred_mask = torch.argmax(mov_line, dim=1)
+    mov_lines = infer_method(input_list=[torch.squeeze(infer_ap_drr), torch.squeeze(infer_la_drr)])
+    ap_pred_mask = torch.argmax(mov_lines[0, :], dim=0)
+    la_pred_mask = torch.argmax(mov_lines[1, :], dim=0)
     # pred_mask = torch.permute(pred_mask.unsqueeze(0), (0, 1, 3, 2))
     # line_tensor = torch.permute(gt_line, (0, 1, 3, 2))
     # pred_mask = torch.permute(pred_mask, (0, 2, 1))
@@ -101,14 +104,14 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     plt.subplot(2, 2, 2)
     plt.imshow(la_gt.squeeze().detach().cpu().numpy(), cmap='gray')
     plt.subplot(2, 2, 3)
-    plt.imshow(ap_line.squeeze().detach().cpu().numpy())
+    plt.imshow(ap_ini_drr.squeeze().detach().cpu().numpy())
     plt.subplot(2, 2, 4)
-    plt.imshow(pred_mask.squeeze().detach().cpu().numpy())
+    plt.imshow(la_ini_drr.squeeze().detach().cpu().numpy())
     plt.show()
     plt.close()
     # 优化算法
-    optimize(drr_gene, [ap_gt, la_gt], ap_line, case_name, scaleInen, ini_pose,
-             [ap_Xdir, ap_Ydir, float(ap_Wld_Offset[1])], [la_Xdir, la_Ydir, float(la_Wld_Offset[0])])
+    optimize(drr_gene, [ap_gt, la_gt], [ap_line, la_line], case_name, scaleInen, ini_pose,
+             [ap_Xdir, ap_Ydir, ap_Wld_Offset], [la_Xdir, la_Ydir, la_Wld_Offset])
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -151,7 +154,7 @@ def optimize(
     steps = np.concatenate([np.zeros(3), np.zeros(3)])
     # optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, population_size=50, lr_adapt=True)
     kDEG2RAD = np.pi / 180
-    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 50, 100, 50])
+    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 100, 200, 100])
     # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
     # optimizer = CMAwM(mean=rtvec, sigma=2.0, bounds=bound, population_size=100, steps=steps, cov=covs)
     optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
@@ -159,6 +162,8 @@ def optimize(
         solutions = []
         op_loss = 0
         dce_loss = 0
+        ap_gncc_loss = 0
+        la_gncc_loss = 0
         for _ in range(optimizer.population_size):
             # x_eval, x_tell = optimizer.ask()
             x_eval = optimizer.ask()
@@ -166,47 +171,57 @@ def optimize(
             x_eval = torch.unsqueeze(torch.tensor(x_eval, dtype=torch.float, requires_grad=False,
                                                   device=device), 0)
             # print(x_eval)
-            ap_extrinsic_update = get_ext_pose(ap_cam_param[0], ap_cam_param[1], ap_cam_param[2], x_eval)
-            la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval)
+            ap_extrinsic_update = get_ext_pose(ap_cam_param[0], ap_cam_param[1], ap_cam_param[2], x_eval, view='ap')
+            la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval, view='la')
             # print(ap_extrinsic_update.matrix.shape)
             dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
             estimate = reg(dual_pose, parameterization="matrix")
-            # ap_estimate = reg(ap_extrinsic_update)
-            # la_estimate = reg(la_extrinsic_update)
             # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
             ap_input = torch.permute(estimate[0, :].unsqueeze(0), (0, 1, 3, 2))
-            ap_pred_line = infer_method(ap_input)
+            # ap_input = torch.permute(estimate, (0, 1, 3, 2))
+            # ap_pred_line = infer_method(ap_input)
+            la_input = torch.permute(estimate[1, :].unsqueeze(0), (0, 1, 3, 2))
+            pred_lines = infer_method(input_list=[torch.squeeze(ap_input), torch.squeeze(la_input)])
             # print(gt_lines.shape)
             # print(ap_pred_line.shape)
-            line_loss = DCE_loss(ap_pred_line, gt_lines)
+            ap_line_loss = DCE_loss(pred_lines[0, :].unsqueeze(0), gt_lines[0])
+            # la_line_loss = DCE_loss(pred_lines[1, :].unsqueeze(0), gt_lines[1])
+            # line_loss = (ap_line_loss + la_line_loss) / 2
+            line_loss = ap_line_loss
             ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
-            la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
+            la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2 * 0.9 + 0.1 * line_loss
+            # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
+            gncc_loss = ap_ncc_loss
+            total_loss = gncc_loss * 0.7 + 0.3 * line_loss
             # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
             # ncc_loss = ap_ncc_loss * 0.9 + 0.1 * line_loss
             # ncc_loss = ap_ncc_loss
-            solutions.append((x_eval.detach().squeeze().cpu().numpy(), ncc_loss.detach().squeeze().cpu().numpy()))
+            solutions.append((x_eval.detach().squeeze().cpu().numpy(), total_loss.detach().squeeze().cpu().numpy()))
             # print(line_loss.item())
             # solutions.append((x_tell, ncc_loss.detach().squeeze().cpu().numpy()))
             # print(solutions)
             # gncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
-            loss = ncc_loss
             dce_loss += line_loss.item()
-            op_loss += loss.item()
+            op_loss += gncc_loss.item()
+            ap_gncc_loss += ap_ncc_loss.item()
+            la_gncc_loss += la_ncc_loss.item()
             # plt.subplot(1, 2, 1)
-            # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
+            # # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
+            # plt.imshow(torch.argmax(pred_lines[0, :], dim=0).squeeze().detach().cpu().numpy())
             # plt.subplot(1, 2, 2)
-            # plt.imshow(estimate[1, :].squeeze().detach().cpu().numpy())
+            # plt.imshow(torch.argmax(pred_lines[1, :], dim=0).squeeze().detach().cpu().numpy())
             # plt.show()
         optimizer.tell(solutions)
         result = torch.unsqueeze(torch.tensor(optimizer._mean, dtype=torch.float, requires_grad=False,
                                               device=device), 0)
         cur_loss = op_loss / optimizer.population_size
         cur_line_loss = dce_loss / optimizer.population_size
+        ap_cur_loss = ap_gncc_loss / optimizer.population_size
+        la_cur_loss = la_gncc_loss / optimizer.population_size
         losses.append(cur_loss)
-        print(f"itr {itr + 1} average loss: {cur_loss:.4f} dce loss: {cur_line_loss:.4f}")
+        print(f"itr {itr + 1} ap_gncc loss: {ap_cur_loss:.4f} la_gncc loss: {la_cur_loss:.4f} dce loss: {cur_line_loss:.4f}")
         alpha, beta, gamma = result[:, :3, ].squeeze().tolist()
         bx, by, bz = result[:, 3:, ].squeeze().tolist()
         params.append([i for i in [alpha, beta, gamma, bx, by, bz]])
@@ -233,13 +248,13 @@ def optimize(
     df = pd.DataFrame(params, columns=["alpha", "beta", "gamma", "bx", "by", "bz"])
     df["loss"] = losses
     print(df)
-    df.to_csv('results/tuodao/{}_dual_pose.csv'.format(samplename), index=False)
-    # return df
+    df.to_csv('results/tuodao/{}_ap_pose.csv'.format(samplename), index=False)
 
 
 def preliminary_process(xray_path, spacing=3.0360001325607300e-01, boundingbox_path=None, x_save=None):
     xray = sitk.ReadImage(xray_path)
-    # print(xray.GetSize())
+    if len(xray.GetSize()) > 2:
+        xray = xray[:, :, 0]
     xray.SetSpacing((spacing, spacing))
     # x_arr = sitk.GetArrayFromImage(xray)
     # if len(x_arr.shape) > 2:
@@ -265,7 +280,7 @@ def preliminary_process(xray_path, spacing=3.0360001325607300e-01, boundingbox_p
     ground_truth = torch.tensor(x_arr)
     ground_truth = torch.unsqueeze(ground_truth, dim=0).to('cuda')
     ground_truth = torch.unsqueeze(ground_truth, dim=0).to('cuda')
-    ground_truth = torch.permute(ground_truth, (0, 1, 3, 2))
+    # ground_truth = torch.permute(ground_truth, (0, 1, 3, 2))
     return ground_truth, resized_x.GetSpacing()[0]
 
 

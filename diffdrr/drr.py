@@ -22,21 +22,21 @@ class DRR(nn.Module):
     """PyTorch module that computes differentiable digitally reconstructed radiographs."""
 
     def __init__(
-        self,
-        subject: Subject,  # TorchIO wrapper for the CT volume
-        sdd: float,  # Source-to-detector distance (i.e., the C-arm's focal length)
-        height: int,  # Height of the rendered DRR
-        delx: float,  # X-axis pixel size
-        width: int | None = None,  # Width of the rendered DRR (default to `height`)
-        dely: float | None = None,  # Y-axis pixel size (if not provided, set to `delx`)
-        x0: float = 0.0,  # Principal point X-offset
-        y0: float = 0.0,  # Principal point Y-offset
-        p_subsample: float | None = None,  # Proportion of pixels to randomly subsample
-        reshape: bool = True,  # Return DRR with shape (b, 1, h, w)
-        reverse_x_axis: bool = True,  # If True, obey radiologic convention (e.g., heart on right)
-        patch_size: int | None = None,  # Render patches of the DRR in series
-        renderer: str = "siddon",  # Rendering backend, either "siddon" or "trilinear"
-        **renderer_kwargs,  # Kwargs for the renderer
+            self,
+            subject: Subject,  # TorchIO wrapper for the CT volume
+            sdd: float,  # Source-to-detector distance (i.e., the C-arm's focal length)
+            height: int,  # Height of the rendered DRR
+            delx: float,  # X-axis pixel size
+            width: int | None = None,  # Width of the rendered DRR (default to `height`)
+            dely: float | None = None,  # Y-axis pixel size (if not provided, set to `delx`)
+            x0: float = 0.0,  # Principal point X-offset
+            y0: float = 0.0,  # Principal point Y-offset
+            p_subsample: float | None = None,  # Proportion of pixels to randomly subsample
+            reshape: bool = True,  # Return DRR with shape (b, 1, h, w)
+            reverse_x_axis: bool = True,  # If True, obey radiologic convention (e.g., heart on right)
+            patch_size: int | None = None,  # Render patches of the DRR in series
+            renderer: str = "siddon",  # Rendering backend, either "siddon" or "trilinear"
+            **renderer_kwargs,  # Kwargs for the renderer
     ):
         super().__init__()
 
@@ -83,7 +83,7 @@ class DRR(nn.Module):
         self.reshape = reshape
         self.patch_size = patch_size
         if self.patch_size is not None:
-            self.n_patches = (height * width) // (self.patch_size**2)
+            self.n_patches = (height * width) // (self.patch_size ** 2)
 
     def reshape_transform(self, img, batch_size):
         if self.reshape:
@@ -94,6 +94,7 @@ class DRR(nn.Module):
             else:
                 img = reshape_subsampled_drr(img, self.detector, batch_size)
         return img
+
 
 # %% ../notebooks/api/00_drr.ipynb 8
 def reshape_subsampled_drr(img: torch.Tensor, detector: Detector, batch_size: int):
@@ -109,12 +110,12 @@ from .pose import convert
 
 @patch
 def forward(
-    self: DRR,
-    *args,  # Some batched representation of SE(3)
-    parameterization: str = None,  # Specifies the representation of the rotation
-    convention: str = None,  # If parameterization is Euler angles, specify convention
-    mask_to_channels: bool = False,  # If True, structures from the CT mask are rendered in separate channels
-    **kwargs,  # Passed to the renderer
+        self: DRR,
+        *args,  # Some batched representation of SE(3)
+        parameterization: str = None,  # Specifies the representation of the rotation
+        convention: str = None,  # If parameterization is Euler angles, specify convention
+        mask_to_channels: bool = False,  # If True, structures from the CT mask are rendered in separate channels
+        **kwargs,  # Passed to the renderer
 ):
     """Generate DRR with rotational and translational parameters."""
     # Initialize the camera pose
@@ -139,7 +140,7 @@ def forward(
         n_points = target.shape[1] // self.n_patches
         img = []
         for idx in range(self.n_patches):
-            t = target[:, idx * n_points : (idx + 1) * n_points]
+            t = target[:, idx * n_points: (idx + 1) * n_points]
             partial = self.renderer(
                 self.density,
                 self.origin,
@@ -152,15 +153,16 @@ def forward(
         img = torch.cat(img, dim=-1)
     return self.reshape_transform(img, batch_size=len(pose))
 
+
 # %% ../notebooks/api/00_drr.ipynb 11
 @patch
 def set_intrinsics(
-    self: DRR,
-    sdd: float = None,
-    delx: float = None,
-    dely: float = None,
-    x0: float = None,
-    y0: float = None,
+        self: DRR,
+        sdd: float = None,
+        delx: float = None,
+        dely: float = None,
+        x0: float = None,
+        y0: float = None,
 ):
     self.detector = Detector(
         sdd if sdd is not None else self.detector.sdd,
@@ -174,15 +176,16 @@ def set_intrinsics(
         reverse_x_axis=self.detector.reverse_x_axis,
     ).to(self.volume)
 
+
 # %% ../notebooks/api/00_drr.ipynb 12
 from .pose import RigidTransform
 
 
 @patch
 def perspective_projection(
-    self: DRR,
-    pose: RigidTransform,
-    pts: torch.Tensor,
+        self: DRR,
+        pose: RigidTransform,
+        pts: torch.Tensor,
 ):
     extrinsic = (self.detector.reorient.compose(pose)).inverse()
     x = extrinsic(pts)
@@ -191,15 +194,16 @@ def perspective_projection(
     x = x / z
     return x[..., :2]
 
+
 # %% ../notebooks/api/00_drr.ipynb 13
 from torch.nn.functional import pad
 
 
 @patch
 def inverse_projection(
-    self: DRR,
-    pose: RigidTransform,
-    pts: torch.Tensor,
+        self: DRR,
+        pose: RigidTransform,
+        pts: torch.Tensor,
 ):
     extrinsic = self.detector.reorient.compose(pose)
     x = self.detector.sdd * torch.einsum(
