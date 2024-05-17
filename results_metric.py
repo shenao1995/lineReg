@@ -11,21 +11,21 @@ import imageio
 from monai.transforms import Resize, CenterSpatialCrop
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity
-from pycocotools.coco import COCO
+# from pycocotools.coco import COCO
 import skimage.io as io
 from skimage.color import rgb2gray
 from mpl_toolkits.mplot3d import Axes3D
-import h5py
+# import h5py
 from monai.transforms import LoadImage, ScaleIntensity
 from diffdrr.drr import DRR
-import pyvista
+# import pyvista
 from diffdrr.visualization import drr_to_mesh, img_to_mesh
 from IPython.display import IFrame
 # from diffpose.visualization import fiducials_to_mesh, lines_to_mesh
 from sklearn.metrics import mean_absolute_error
 from diffdrr.pose import convert
-from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, get_ext_pose
-from diffpose.visualization import overlay_edges
+from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, get_ext_pose, update_pose
+# from diffpose.visualization import overlay_edges
 from diffdrr.data import read
 import seaborn as sns
 from matplotlib import font_manager, rcParams
@@ -112,8 +112,8 @@ def animate_reg_process():
 def animate_spine_reg():
     caseName = 'dukemei'
     isDualView = True
-    video_name = 'results/tuodao/{}_L3_spine_ap.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_spine_ap_pose.csv'.format(caseName)
+    video_name = 'results/tuodao/{}_L3_spine_dual.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
     ct_dir = 'Data/tuodao/dukemei/{}.nii.gz'.format(caseName)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
     la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
@@ -140,6 +140,9 @@ def animate_spine_reg():
     # plt.show()
     subject = read(ct_dir, bone_attenuation_multiplier=10.5)
     drr_generator = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 15,
                                 (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
@@ -151,8 +154,10 @@ def animate_spine_reg():
             torch.tensor(row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
         )
         # print(row[["bx", "by", "bz"]].values)
-        ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, pose.float(), view='ap')
-        la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, pose.float(), view='la')
+        # ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, pose.float(), view='ap')
+        # la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, pose.float(), view='la')
+        ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+        la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
         # print(ap_extrinsic_update.matrix.shape)
         dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
         itr = drr_generator(dual_pose, parameterization="matrix")
@@ -529,8 +534,8 @@ def test_gt_overlay():
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    animate_reg_process()
-    # animate_spine_reg()
+    # animate_reg_process()
+    animate_spine_reg()
     # test_gt_overlay()
     # reg_process_visual_3d()
     # cal_error()

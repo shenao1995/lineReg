@@ -25,8 +25,12 @@ def show_cam_Ext_mat(img_path, ap_xml_path, la_xml_path):
     subject = read(img_path, bone_attenuation_multiplier=10.5)
     ini_pose = torch.zeros(1, 6).to(device)
     # ini_pose = torch.tensor([[0.0, 0.0, 0.0, 0.0, 100.0, 0.0]]).to(device, dtype=torch.float32)
-    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, la_wld_T, ini_pose, view='ap')
-    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, ap_wld_T, ini_pose, view='la')
+    print("ap_extrinsic_update-------------------------------------------------------")
+    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_wld_T, ini_pose, view='ap')
+    print(ap_extrinsic_update.matrix)
+    print("la_extrinsic_update-------------------------------------------------------")
+    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_wld_T, ini_pose, view='la')
+    print(la_extrinsic_update.matrix)
     # print(subject.shape)
     drr = DRR(
         subject,  # An object storing the CT volume, origin, and voxel spacing
@@ -56,8 +60,8 @@ def show_cam_Ext_mat(img_path, ap_xml_path, la_xml_path):
     plotter.add_axes()
     plotter.add_bounding_box()
     plotter.show_grid()
-    plotter.export_html("render_wld1.html")
-    IFrame("render_wld1.html", height=500, width=749)
+    plotter.export_html("render_wld23.html")
+    IFrame("render_wld23.html", height=500, width=749)
     # ground_truth = torch.permute(ground_truth, (0, 1, 3, 2))
     plt.subplot(1, 2, 1)
     plt.imshow(ap_gt.squeeze().detach().cpu().numpy(), cmap='gray')
@@ -71,3 +75,5 @@ if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     show_cam_Ext_mat("Data/tuodao/dukemei/dukemei.nii.gz", "Data/tuodao/dukemei/X/View/180/calib_view.xml",
                      "Data/tuodao/dukemei/X/View/1/calib_view.xml")
+    # show_cam_Ext_mat("Data/tuodao/dingjunmei/dingjunmei.nii.gz", "Data/tuodao/dingjunmei/X/View/180/calib_view.xml",
+    #                  "Data/tuodao/dingjunmei/X/View/20/calib_view.xml")

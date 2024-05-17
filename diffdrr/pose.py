@@ -790,14 +790,14 @@ def _acos_linear_approximation(x: torch.Tensor, x0: float) -> torch.Tensor:
     """
     Calculates the 1st order Taylor expansion of `arccos(x)` around `x0`.
     """
-    return (x - x0) * _dacos_dx(x0) + math.acos(x0)
+    return (x - x0) * _dacos_dx(x0) + torch.acos(x0)
 
 
 def _dacos_dx(x: float) -> float:
     """
     Calculates the derivative of `arccos(x)` w.r.t. `x`.
     """
-    return (-1.0) / math.sqrt(1.0 - x * x)
+    return (-1.0) / torch.sqrt(1.0 - x * x)
 
 # %% ../notebooks/api/06_pose.ipynb 18
 # pytorch3d/transforms/so3.py

@@ -5,7 +5,6 @@ import torch
 from tqdm import tqdm
 import SimpleITK as sitk
 from diffdrr.drr import DRR
-from diffdrr.registration import Registration
 from diffdrr.metrics import NormalizedCrossCorrelation2d, GradientNormalizedCrossCorrelation2d, \
     MultiscaleNormalizedCrossCorrelation2d
 from monai.losses import DiceLoss, DiceCELoss, GeneralizedDiceLoss, SSIMLoss
@@ -21,7 +20,7 @@ import nibabel as nib
 from tools import get_initial_parameters
 from monai.networks.utils import one_hot
 from losses.MaskedGNCCLoss import MaskGradientNormalizedCrossCorrelation2d, MaskNormalizedCrossCorrelation2d
-from tools import resample_img, HE_optimize, read_xml, get_ext_pose
+from tools import resample_img, HE_optimize, read_xml, get_ext_pose, update_pose
 from sklearn.metrics import mean_absolute_error
 import math
 import os
@@ -41,8 +40,13 @@ def reg_method(origin_ct_path, seg_path, xray_paths, case_name, x_saves, xml_pat
     # print(ini_pose.shape)
     DELX = Xray_H / 122 * ap_spacing
     print(DELX)
-    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, la_Wld_Offset, ini_pose, view='ap')
-    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, ap_Wld_Offset, ini_pose, view='la')
+    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
+
+    # print("ap_extrinsic_update.matrix:")
+    # print(ap_extrinsic_update.matrix)
+
+    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
+
     subject = read(origin_ct_path, bone_attenuation_multiplier=10.5)
     drr_gene = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
     scaleInen = ScaleIntensity()
@@ -63,7 +67,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, case_name, x_saves, xml_pat
     plt.close()
     # 优化算法
     optimize(drr_gene, [ap_gt, la_gt], case_name, scaleInen, ini_pose,
-             [ap_Xdir, ap_Ydir, la_Wld_Offset], [la_Xdir, la_Ydir, ap_Wld_Offset])
+             [ap_Xdir, ap_Ydir, ap_Wld_Offset], [la_Xdir, la_Ydir, la_Wld_Offset], ap_extrinsic_update, la_extrinsic_update)
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -77,7 +81,9 @@ def optimize(
         initial_pose,
         ap_cam_param,
         la_cam_param,
-        n_itrs=100,
+        ap_wld_extrinsic_update,
+        la_wld_extrinsic_update,
+        n_itrs=100
 ):
     T1 = time.time()
     # 损失函数，先尝试的归一化互相关loss
@@ -120,9 +126,12 @@ def optimize(
             x_eval = torch.unsqueeze(torch.tensor(x_eval, dtype=torch.float, requires_grad=False,
                                                   device=device), 0)
             # print(x_eval)
-            ap_extrinsic_update = get_ext_pose(ap_cam_param[0], ap_cam_param[1], ap_cam_param[2], x_eval, view='ap')
-            la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval, view='la')
+            # ap_extrinsic_update = get_ext_pose(ap_cam_param[0], ap_cam_param[1], ap_cam_param[2], x_eval, view='ap')
+            # la_extrinsic_update = get_ext_pose(la_cam_param[0], la_cam_param[1], la_cam_param[2], x_eval, view='la')
+            ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, x_eval)
+            la_extrinsic_update = update_pose(la_wld_extrinsic_update, x_eval)
             # print(ap_extrinsic_update.matrix.shape)
+            # dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
             dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
             estimate = reg(dual_pose, parameterization="matrix")
             # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
@@ -130,7 +139,8 @@ def optimize(
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
+            # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
+            gncc_loss = ap_ncc_loss * 0.8 + la_ncc_loss * 0.2
             # gncc_loss = ap_ncc_loss
             total_loss = gncc_loss
             # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
@@ -146,10 +156,16 @@ def optimize(
             la_gncc_loss += la_ncc_loss.item()
             # plt.subplot(1, 2, 1)
             # # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
-            # plt.imshow(torch.argmax(pred_lines[0, :], dim=0).squeeze().detach().cpu().numpy())
+            # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
             # plt.subplot(1, 2, 2)
-            # plt.imshow(torch.argmax(pred_lines[1, :], dim=0).squeeze().detach().cpu().numpy())
+            # plt.imshow(estimate[1, :].squeeze().detach().cpu().numpy())
             # plt.show()
+        # plt.subplot(1, 2, 1)
+        # # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
+        # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
+        # plt.subplot(1, 2, 2)
+        # plt.imshow(estimate[1, :].squeeze().detach().cpu().numpy())
+        # plt.show()
         optimizer.tell(solutions)
         result = torch.unsqueeze(torch.tensor(optimizer._mean, dtype=torch.float, requires_grad=False,
                                               device=device), 0)
@@ -183,7 +199,7 @@ def optimize(
     df = pd.DataFrame(params, columns=["alpha", "beta", "gamma", "bx", "by", "bz"])
     df["loss"] = losses
     print(df)
-    df.to_csv('results/tuodao/{}_spine_ap_pose.csv'.format(samplename), index=False)
+    df.to_csv('results/tuodao/{}_spine_dual_pose.csv'.format(samplename), index=False)
 
 
 def xray_process(xray_path, spacing=3.0360001325607300e-01, save_dir=None):

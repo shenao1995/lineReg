@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 import SimpleITK as sitk
 from diffdrr.drr import DRR
-from diffdrr.registration import Registration
+# from diffdrr.registration import Registration
 from diffdrr.metrics import NormalizedCrossCorrelation2d, GradientNormalizedCrossCorrelation2d, \
     MultiscaleNormalizedCrossCorrelation2d
 from monai.losses import DiceLoss, DiceCELoss, GeneralizedDiceLoss, SSIMLoss
@@ -52,6 +52,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     la_line = line_preprocess(line_paths[1])
     ini_pose = torch.zeros(1, 6).to(device)
     # print(ini_pose.shape)
+
     ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap', offset_trans=offset_trans)
     la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la', offset_trans=offset_trans)
     print(SDD)
@@ -126,6 +127,8 @@ def optimize(
         initial_pose,
         ap_cam_param,
         la_cam_param,
+        ap_wld_extrinsic_update,
+        la_wld_extrinsic_update,
         n_itrs=100,
 ):
     T1 = time.time()
