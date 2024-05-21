@@ -46,9 +46,8 @@ def gradncc(I, J, mask=None, device='cuda', win=None, eps=1e-10):
     Iy = SobelY(I)
     Jx = SobelX(J)
     Jy = SobelY(J)
-    if mask:
-        Jx = Jx * mask
-        Jy = Jy * mask
+    Jx = Jx * mask
+    Jy = Jy * mask
     # plt.subplot(1, 4, 1)
     # plt.imshow(Ix[0, :].squeeze().detach().cpu().numpy())
     # plt.subplot(1, 4, 2)
