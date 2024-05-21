@@ -24,7 +24,8 @@ from IPython.display import IFrame
 # from diffpose.visualization import fiducials_to_mesh, lines_to_mesh
 from sklearn.metrics import mean_absolute_error
 from diffdrr.pose import convert
-from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, get_ext_pose
+from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, \
+    get_ext_pose, update_pose
 from diffpose.visualization import overlay_edges
 from diffdrr.data import read
 import seaborn as sns
@@ -32,11 +33,13 @@ from matplotlib import font_manager, rcParams
 
 
 def animate_reg_process():
-    caseName = 'dukemei'
+    caseName = 'peizongping'
     vert_num = 'L3'
     isDualView = True
-    video_name = 'results/tuodao/{}_L3_ap.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_ap_pose.csv'.format(caseName)
+    video_name = 'results/tuodao/{}_{}_dual.mp4'.format(caseName, vert_num)
+    results_path = 'results/tuodao/{}_{}_dual_pose.csv'.format(caseName, vert_num)
+    ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
+    vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
     la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
     vert_save_path = 'Data/tuodao/{}/{}_{}.nii.gz'.format(caseName, caseName, vert_num)
@@ -44,8 +47,8 @@ def animate_reg_process():
     la_Xdir, la_Ydir, _, _, _, la_Wld_Offset = read_xml(la_xml_path)
     poses_data = pd.read_csv(results_path)
     reader = LoadImage(ensure_channel_first=True, image_only=False)
-    # offsetx, offsety, offsetz, vert_img, _ = crop_ct_vert(ct_path, vert_seg_path)
-    # offset_trans = np.array([offsetx, offsety, offsetz])
+    offsetx, offsety, offsetz, vert_img, _ = crop_ct_vert(ct_path, vert_seg_path)
+    offset_trans = np.array([offsetx, offsety, offsetz])
     # offset_trans[0] = float(ap_Wld_Offset[1]) / SDD * offset_trans[0]
     # offset_trans[1] = float(ap_Wld_Offset[1]) / SDD * offset_trans[1]
     DELX = 1.1574750505387783
@@ -53,6 +56,9 @@ def animate_reg_process():
     la_bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
     rgb_ap_gt = read_bg_img(bg_path, reader)
     # print(rgb_ap_gt.shape)
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose.float(), view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose.float(), view='la')
     if isDualView:
         rgb_la_gt = read_bg_img(la_bg_path, reader)
     # plt.imshow(rgb_ap_gt)
@@ -64,9 +70,11 @@ def animate_reg_process():
     subject = read(vert_save_path, bone_attenuation_multiplier=10.5)
     drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX, reverse_x_axis=False).to(device)
     if isDualView:
-        video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10, (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
+        video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10,
+                                (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
     else:
-        video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10, (rgb_ap_gt.shape[0], rgb_ap_gt.shape[1]))
+        video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10,
+                                (rgb_ap_gt.shape[0], rgb_ap_gt.shape[1]))
     for idx, row in poses_data.iterrows():
         # rotations = (
         #     torch.tensor(row[["alpha", "beta", "gamma"]].values).unsqueeze(0)
@@ -79,8 +87,8 @@ def animate_reg_process():
             torch.tensor(row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
         )
         # print(row[["bx", "by", "bz"]].values)
-        ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, pose.float(), view='ap')
-        la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, pose.float(), view='la')
+        ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+        la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
         # print(ap_extrinsic_update.matrix.shape)
         dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
         itr = drr_generator(dual_pose, parameterization="matrix")
@@ -112,9 +120,11 @@ def animate_reg_process():
 def animate_spine_reg():
     caseName = 'dukemei'
     isDualView = True
-    video_name = 'results/tuodao/{}_L3_spine_ap.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_spine_ap_pose.csv'.format(caseName)
+    vert_num = 'L3'
+    video_name = 'results/tuodao/{}_L3_dual.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
     ct_dir = 'Data/tuodao/dukemei/{}.nii.gz'.format(caseName)
+    vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
     la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
     ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(ap_xml_path)
@@ -130,6 +140,9 @@ def animate_spine_reg():
     la_bg_path = 'Data/tuodao/{}/X/{}_122_x_la.nii.gz'.format(caseName, caseName)
     rgb_ap_gt = read_bg_img(bg_path, reader)
     # print(rgb_ap_gt.shape)
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
     if isDualView:
         rgb_la_gt = read_bg_img(la_bg_path, reader)
     # plt.imshow(rgb_ap_gt)
@@ -138,7 +151,7 @@ def animate_spine_reg():
     # plt.imshow(rgb_la_gt)
     # plt.colorbar()
     # plt.show()
-    subject = read(ct_dir, bone_attenuation_multiplier=10.5)
+    subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
     drr_generator = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 15,
@@ -151,11 +164,20 @@ def animate_spine_reg():
             torch.tensor(row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
         )
         # print(row[["bx", "by", "bz"]].values)
-        ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, pose.float(), view='ap')
-        la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, pose.float(), view='la')
+        # ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, pose.float(), view='ap')
+        # la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, pose.float(), view='la')
+        ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+        la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
+        # ap_update_rot, ap_update_trans = update_pose(ap_wld_extrinsic_update, pose.float())
+        # la_update_rot, la_update_trans = update_pose(la_wld_extrinsic_update, pose.float())
         # print(ap_extrinsic_update.matrix.shape)
         dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
         itr = drr_generator(dual_pose, parameterization="matrix")
+        # ap_dual_rot = torch.concat((ap_update_rot, la_update_rot), dim=0)
+        # la_dual_trans = torch.concat((ap_update_trans, la_update_trans), dim=0)
+        # print(ap_dual_rot)
+        # print(la_dual_trans)
+        # itr = drr_generator(ap_dual_rot, la_dual_trans, parameterization="euler_angles", convention="ZXY")
         # print(itr.shape)
         # itr = torch.permute(itr, (0, 1, 3, 2))
         itr = itr.squeeze().cpu().numpy()
@@ -286,7 +308,6 @@ def add_other_mesh(pl, rotate, transl, drr, gt_det=None, isCT=False):
         drr, pose
     )
     if isCT:
-
         det_offset = np.array(detector.center) - np.array(gt_det.center)
         if rotate[0][0] == 0:
             offset_arr = np.array([det_offset[0], det_offset[1], det_offset[2]])
@@ -400,6 +421,75 @@ def proj_visual_3d():
     plotter.export_html("render.html")
     # plotter.plot()
     IFrame("render.html", height=500, width=749)
+
+
+def reg_real_visual_3d():
+    # Read in the volume and get the isocenter
+    # reader = LoadImage(ensure_channel_first=True)
+    caseName = 'dukemei'
+    pose_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
+    poses_data = pd.read_csv(pose_path)
+    # vert_Dir = 'Data/gncc_data/tuodao/dingjunmei/unmeaning_L2.nii.gz'
+    ct_Dir = 'Data/tuodao/dukemei/dukemei.nii.gz'
+    ap_xml_path = "Data/tuodao/dukemei/X/View/180/calib_view.xml"
+    la_xml_path = "Data/tuodao/dukemei/X/View/1/calib_view.xml"
+    # Make a mesh from the CT volume
+    ap_Xdir, ap_Ydir, X_Spacing, SDD, Xray_H, ap_wld_T = read_xml(ap_xml_path)
+    la_Xdir, la_Ydir, _, _, _, la_wld_T = read_xml(la_xml_path)
+    print(ap_wld_T)
+    print(la_wld_T)
+    HEIGHT = 256
+    DELX = float(Xray_H) / HEIGHT * X_Spacing
+    subject = read(ct_Dir, bone_attenuation_multiplier=10.5)
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_wld_T, ini_pose, view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_wld_T, ini_pose, view='la')
+    ct_mesh = drr_to_mesh(subject, "surface_nets", threshold=225, verbose=True)
+    # ct_offset = np.array(ct_mesh.center) - np.array(vert_mesh.center)
+    plotter = pyvista.Plotter()
+    plotter.add_mesh(ct_mesh)
+    plotter.open_gif('results/tuodao/{}_reg_process.gif'.format(caseName), fps=20)
+    drr = DRR(
+        subject,  # An object storing the CT volume, origin, and voxel spacing
+        sdd=SDD,  # Source-to-detector distance (i.e., focal length)
+        height=HEIGHT,  # Image height (if width is not provided, the generated DRR is square)
+        delx=DELX,  # Pixel spacing (in mm)
+        reverse_x_axis=False
+    ).to(device)
+    for idx, row in poses_data.iterrows():
+        pose = (
+            torch.tensor(row[["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
+        )
+        ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+        la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
+        # ap_update_rot, ap_update_trans = update_pose(ap_extrinsic_update, pose.float())
+        # la_update_rot, la_update_trans = update_pose(la_extrinsic_update, pose.float())
+        # print(rotate)
+        # print(transl)
+        camera1, detector1, texture1, principal_ray1 = img_to_mesh(drr, ap_extrinsic_update)
+        camera2, detector2, texture2, principal_ray2 = img_to_mesh(drr, la_extrinsic_update)
+        # volume_mesh = drr_to_mesh(subject, "surface_nets", threshold=225, verbose=True)
+        # Make the plot
+        plotter.add_mesh(ct_mesh)
+        plotter.add_mesh(camera1, show_edges=True, line_width=1.5)
+        plotter.add_mesh(principal_ray1, color="lime", line_width=3)
+        plotter.add_mesh(detector1, texture=texture1)
+        plotter.add_mesh(camera2, show_edges=True, line_width=1.5)
+        plotter.add_mesh(principal_ray2, color="lime", line_width=3)
+        plotter.add_mesh(detector2, texture=texture2)
+        plotter.write_frame()
+        plotter.clear()
+        # print(detector.center)
+        # for line in lines:
+        #     plotter.add_mesh(line, color="lime")
+        # Render the plot
+        # Make a mesh from the camera and detector plane
+    plotter.close()
+    # plotter.add_bounding_box()
+    # plotter.add_axes()
+    # plotter.export_html("render.html")
+    # # plotter.plot()
+    # IFrame("render.html", height=500, width=749)
 
 
 def draw_box_plot():
@@ -533,6 +623,7 @@ if __name__ == '__main__':
     # animate_spine_reg()
     # test_gt_overlay()
     # reg_process_visual_3d()
+    # reg_real_visual_3d()
     # cal_error()
     # draw_box_plot()
     # proj_visual_3d()
