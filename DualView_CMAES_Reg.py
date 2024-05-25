@@ -10,11 +10,9 @@ from diffdrr.metrics import NormalizedCrossCorrelation2d, GradientNormalizedCros
     MultiscaleNormalizedCrossCorrelation2d
 from monai.losses import DiceLoss, DiceCELoss, GeneralizedDiceLoss, SSIMLoss, HausdorffDTLoss
 from diffdrr.visualization import plot_drr
-from diffdrr.visualization import animate
 from base64 import b64encode
 from monai.transforms import LoadImage, ScaleIntensity, Resize
 # import cv2
-from CNCC import CannyCrossCorrelation2d
 import time
 import torch.nn as nn
 import nibabel as nib
@@ -23,13 +21,14 @@ from tools import get_initial_parameters
 from monai.networks.utils import one_hot
 from losses.MaskedGNCCLoss import MaskGradientNormalizedCrossCorrelation2d, MaskNormalizedCrossCorrelation2d
 from tools import get_drr, get_lineCenter_offset, crop_ct_vert, gaussian_preprocess, resample_img, \
-    bbx_crop_gt_vert, HE_optimize, read_xml, get_ext_pose, update_pose
+    bbx_crop_gt_vert, HE_optimize, read_xml, get_ext_pose, update_pose, masks_to_boxes
 from sklearn.metrics import mean_absolute_error
 import math
 import os
 from losses.ZNCC import ncc, gradncc
 from cmaes import CMA, CMAwM
 from diffdrr.pose import convert, RigidTransform
+from monai.networks.nets import AttentionUnet
 
 
 def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_name, save_dir, x_saves,
@@ -47,9 +46,12 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     # gt_mask = torch.permute(gt_mask, (0, 1, 3, 2))
     ap_line = line_preprocess(line_paths[0])
     la_line = line_preprocess(line_paths[1])
-    ini_pose = torch.zeros(1, 6).to(device)
-    ini_pose[:, 3], ini_pose[:, 4], ini_pose[:, 5] = -offset_trans[0], offset_trans[1], offset_trans[2]
+    # ini_pose = torch.zeros(1, 6).to(device)
+    # ini_pose[:, 3], ini_pose[:, 4], ini_pose[:, 5] = -offset_trans[0], offset_trans[1], offset_trans[2]
     # print(ini_pose.shape)
+    ini_pose = torch.tensor([[-0.011898027, -0.053354662, -0.168720275, -61.61990738, -99.07395172, -34.39813614]]).to(device)
+    ini_pose[:, 3], ini_pose[:, 4], ini_pose[:, 5] = ini_pose[:, 3]-offset_trans[0], ini_pose[:, 4]-offset_trans[1], \
+                                                     ini_pose[:, 5]+offset_trans[2]
     ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
     la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
     ap_init = update_pose(ap_extrinsic_update, ini_pose)
@@ -71,6 +73,8 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     # la_gt = torch.permute(la_gt, (0, 1, 3, 2))
     # print(bbx_gt.shape)
     # mov_lines = infer_method(input_list=[torch.squeeze(infer_ap_drr), torch.squeeze(infer_la_drr)])
+    # ap_pred_mask = mov_lines[0]
+    # la_pred_mask = mov_lines[1]
     # ap_pred_mask = torch.argmax(mov_lines[0, :], dim=0)
     # la_pred_mask = torch.argmax(mov_lines[1, :], dim=0)
     # ap_line_coarse = torch.permute(ap_line, (0, 1, 3, 2))
@@ -100,6 +104,8 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     # )
     # coarse_drr = coarse_reg()
     # coarse_drr = torch.permute(coarse_drr, (0, 1, 3, 2))
+    ap_gt_center = get_img_center(ap_mask.squeeze(0))
+    la_gt_center = get_img_center(la_mask.squeeze(0))
     plt.subplot(2, 2, 1)
     plt.imshow(ap_ini_drr.squeeze().detach().cpu().numpy(), cmap='gray')
     plt.subplot(2, 2, 2)
@@ -112,7 +118,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     plt.close()
     # 优化算法
     optimize(drr_gene, [ap_gt, la_gt], [ap_line, la_line], [ap_mask, la_mask], case_name, scaleInen, ini_pose,
-             [ap_Xdir, ap_Ydir, ap_Wld_Offset], [la_Xdir, la_Ydir, la_Wld_Offset], ap_extrinsic_update, la_extrinsic_update)
+             [ap_gt_center, la_gt_center], ap_extrinsic_update, la_extrinsic_update)
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -126,8 +132,7 @@ def optimize(
         samplename,
         scaler,
         initial_pose,
-        ap_cam_param,
-        la_cam_param,
+        centers,
         ap_wld_extrinsic_update,
         la_wld_extrinsic_update,
         n_itrs=150,
@@ -139,35 +144,47 @@ def optimize(
     # NCC_loss = NormalizedCrossCorrelation2d()
     # DCE_loss = HausdorffDTLoss(to_onehot_y=True, softmax=True)
     DCE_loss = DiceCELoss(include_background=False, to_onehot_y=True, softmax=True)
+    MSE_loss = torch.nn.MSELoss()
     # criterion = GeneralizedDiceLoss(include_background=False, to_onehot_y=True)
     min_generation = 0
     params = []
     gncc_losses = []
     line_losses = []
     # ground_truth = one_hot(ground_truth, num_classes=2)
-    offset_range = 18
+    offset_range = 36
     rot = initial_pose[:, :3].cpu().numpy().squeeze()
     trans = initial_pose[:, 3:].cpu().numpy().squeeze()
+    rtvec = initial_pose.cpu().numpy().squeeze()
+    # rtvec = np.array([-0.011898027, -0.053354662, -0.168720275, -61.61990738, -99.07395172, -34.39813614])
     bound = [[rot[0] - np.pi / offset_range, rot[0] + np.pi / offset_range],
              [rot[1] - np.pi / offset_range, rot[1] + np.pi / offset_range],
              [rot[2] - np.pi / offset_range, rot[2] + np.pi / offset_range],
-             [trans[0] - 100, trans[0] + 100], [trans[1] - 100, trans[1] + 100], [trans[2] - 100, trans[2] + 100]]
+             [trans[0] - 20, trans[0] + 20], [trans[1] - 50, trans[1] + 50], [trans[2] - 20, trans[2] + 20]]
     bound = np.array(bound)
     # 迭代循环
     early_stop = False
-    rtvec = np.concatenate([rot, trans])
+    # rtvec = np.concatenate([rot, trans])
+    # rtvec = np.array([-0.011898027, -0.053354662, -0.168720275, -61.61990738, -99.07395172, -34.39813614])
     # print(rtvec)
     # steps = np.concatenate([np.ones(3), np.ones(3)])
     # optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, population_size=50, lr_adapt=True)
     kDEG2RAD = np.pi / 180
-    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 100, 200, 100])
+    covs = np.diag([0.2 * kDEG2RAD, 1.0 * kDEG2RAD, 0.2 * kDEG2RAD, 15, 30, 15])
     # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
     # optimizer = CMAwM(mean=rtvec, sigma=2.0, bounds=bound, population_size=60, steps=steps, cov=covs)
-    optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=60)
+    optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
+    log_dir = 'line_model/AttUNet_model1.pth'
+    net = AttentionUnet(spatial_dims=2,
+                        in_channels=1,
+                        out_channels=2,
+                        channels=(16, 32, 64, 128, 256),
+                        strides=(2, 2, 2, 2)).to(device)
+    net.load_state_dict(torch.load(log_dir))
     for itr in tqdm(range(n_itrs), ncols=100):
         solutions = []
         op_loss = 0
         dce_loss = 0
+        center_loss = 0
         ap_gncc_sum_loss = 0
         la_gncc_sum_loss = 0
         for _ in range(optimizer.population_size):
@@ -186,55 +203,69 @@ def optimize(
             estimate = reg(dual_pose, parameterization="matrix")
             # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
             ap_input = torch.permute(estimate[0, :].unsqueeze(0), (0, 1, 3, 2))
-            # ap_input = torch.permute(estimate, (0, 1, 3, 2))
-            # ap_pred_line = infer_method(ap_input)
             la_input = torch.permute(estimate[1, :].unsqueeze(0), (0, 1, 3, 2))
-            pred_lines = infer_method(input_list=[torch.squeeze(ap_input), torch.squeeze(la_input)])
+            # pred_lines = infer_method(net, input_list=[torch.squeeze(ap_input), torch.squeeze(la_input)])
             # print(gt_lines.shape)
             # print(ap_pred_line.shape)
-            ap_line_loss = DCE_loss(pred_lines[0, :].unsqueeze(0), gt_lines[0])
-            la_line_loss = DCE_loss(pred_lines[1, :].unsqueeze(0), gt_lines[1])
-            line_loss = (ap_line_loss + la_line_loss) / 2
-            # line_loss = ap_line_loss * 0.6 + la_line_loss * 0.4
+            # ap_line_loss = DCE_loss(pred_lines[0, :].unsqueeze(0), gt_lines[0])
+            # la_line_loss = DCE_loss(pred_lines[1, :].unsqueeze(0), gt_lines[1])
+            # line_loss = (ap_line_loss + la_line_loss) / 2
+            # line_loss = ap_line_loss * 0.7 + la_line_loss * 0.3
             ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float(), mask=gt_masks[0])
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float(), mask=gt_masks[1])
+            # if torch.max(estimate[0, :]) == 0:
+            #     ap_center = torch.tensor([128.0, 128.0]).to(device)
+            # else:
+            #     ap_center = get_img_center(estimate[0, :])
+            # if torch.max(estimate[1, :]) == 0:
+            #     la_center = torch.tensor([128.0, 128.0]).to(device)
+            # else:
+            #     la_center = get_img_center(estimate[1, :])
+            # ap_point_loss = MSE_loss(ap_center, centers[0])
+            # la_point_loss = MSE_loss(la_center, centers[1])
+            # point_loss = (ap_point_loss + la_point_loss) / 2
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
             # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            gncc_loss = ap_ncc_loss * 0.7 + la_ncc_loss * 0.3
+            # gncc_loss = ap_ncc_loss * 0.9 + la_ncc_loss * 0.1
+            gncc_loss = ap_ncc_loss * 0.3 + la_ncc_loss * 0.7
             # gncc_loss = la_ncc_loss
             total_loss = gncc_loss * 0.8 + line_loss * 0.2
-            # ncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            # ncc_loss = ap_ncc_loss * 0.9 + 0.1 * line_loss
-            # ncc_loss = ap_ncc_loss
+            # total_loss = gncc_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), total_loss.detach().squeeze().cpu().numpy()))
             # print(line_loss.item())
             # solutions.append((x_tell, ncc_loss.detach().squeeze().cpu().numpy()))
             # print(solutions)
             # gncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
-            dce_loss += line_loss.item()
+            # dce_loss += line_loss.item()
             op_loss += gncc_loss.item()
+            # center_loss += point_loss.item()
             ap_gncc_sum_loss += ap_ncc_loss.item()
             la_gncc_sum_loss += la_ncc_loss.item()
-            # if gncc_loss.item() < best_loss:
-            #     best_loss = gncc_loss.item()
-            #     break
             # plt.subplot(1, 2, 1)
-            # # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
-            # plt.imshow(torch.argmax(pred_lines[0, :], dim=0).squeeze().detach().cpu().numpy())
+            # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
+            # # plt.imshow(torch.argmax(pred_lines[0, :], dim=0).squeeze().detach().cpu().numpy())
             # plt.subplot(1, 2, 2)
-            # plt.imshow(torch.argmax(pred_lines[1, :], dim=0).squeeze().detach().cpu().numpy())
+            # plt.imshow(estimate[1, :].squeeze().detach().cpu().numpy())
             # plt.show()
+            # print(torch.max(estimate[0, :]))
+            # print(masks_to_boxes(estimate[0, :]))
+            # print(masks_to_boxes(gt_masks[1]))
         optimizer.tell(solutions)
         result = torch.unsqueeze(torch.tensor(optimizer._mean, dtype=torch.float, requires_grad=False,
                                               device=device), 0)
         cur_loss = op_loss / optimizer.population_size
         cur_line_loss = dce_loss / optimizer.population_size
+        cur_point_loss = center_loss / optimizer.population_size
         ap_cur_loss = ap_gncc_sum_loss / optimizer.population_size
         la_cur_loss = la_gncc_sum_loss / optimizer.population_size
         gncc_losses.append(cur_loss)
         line_losses.append(cur_line_loss)
-        print(f"itr {itr + 1} ap_gncc loss: {ap_cur_loss:.4f} la_gncc loss: {la_cur_loss:.4f} dce loss: {cur_line_loss:.4f}")
+        # print(
+        #     f"itr {itr + 1} ap_gncc loss: {ap_cur_loss:.4f} la_gncc loss: {la_cur_loss:.4f} "
+        #     f"dce loss: {cur_line_loss:.4f} center loss: {cur_point_loss:.4f}")
+        print(f"itr {itr + 1} ap_gncc loss: {ap_cur_loss:.4f} la_gncc loss: {la_cur_loss:.4f} "
+              f"dce loss: {cur_line_loss:.4f}")
         alpha, beta, gamma = result[:, :3, ].squeeze().tolist()
         bx, by, bz = result[:, 3:, ].squeeze().tolist()
         params.append([i for i in [alpha, beta, gamma, bx, by, bz]])
@@ -244,7 +275,7 @@ def optimize(
         # if min_generation + 5 < itr and early_stop:
         #     print('early stop at generation:', itr)
         #     break
-        if abs(gncc_losses[itr - 1] - cur_loss) < 0.00001 and itr > 10:
+        if abs(gncc_losses[itr - 1] - cur_loss) < 0.00001 and itr > 5:
             # if losses[itr-1] < cur_loss:
             tqdm.write(f"Converged in {itr} iterations")
             T2 = time.time()
@@ -263,6 +294,13 @@ def optimize(
     df["line_loss"] = line_losses
     print(df)
     df.to_csv('results/tuodao/{}_dual_pose.csv'.format(samplename), index=False)
+
+
+def get_img_center(input_arr):
+    img_bbx = masks_to_boxes(input_arr)
+    center_x = img_bbx[0, 0] + (img_bbx[0, 2] - img_bbx[0, 0]) / 2
+    center_y = img_bbx[0, 1] + (img_bbx[0, 3] - img_bbx[0, 1]) / 2
+    return torch.tensor([center_x, center_y]).to(device)
 
 
 def preliminary_process(xray_path, spacing=3.0360001325607300e-01, boundingbox_path=None, x_save=None):
@@ -289,7 +327,7 @@ def preliminary_process(xray_path, spacing=3.0360001325607300e-01, boundingbox_p
     resized_x = resample_img(processed_img, new_width=256, save_path=x_save)
     resized_mask = resample_img(xray_mask, new_width=256)
     mask_arr = sitk.GetArrayFromImage(resized_mask)
-    gt_bbx = torch.from_numpy(mask_arr/1.0)
+    gt_bbx = torch.from_numpy(mask_arr / 1.0)
     gt_bbx = torch.unsqueeze(gt_bbx, dim=0).to('cuda')
     # cropped_x = bbx_crop_gt_vert(resized_x, resized_mask, inverse=False)
     x_arr = sitk.GetArrayFromImage(resized_x)

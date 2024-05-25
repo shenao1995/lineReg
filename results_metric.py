@@ -33,7 +33,7 @@ from matplotlib import font_manager, rcParams
 
 
 def animate_reg_process():
-    caseName = 'peizongping'
+    caseName = 'dukemei'
     vert_num = 'L3'
     isDualView = True
     video_name = 'results/tuodao/{}_{}_dual.mp4'.format(caseName, vert_num)
@@ -67,7 +67,7 @@ def animate_reg_process():
     # plt.imshow(rgb_la_gt)
     # plt.colorbar()
     # plt.show()
-    subject = read(vert_save_path, bone_attenuation_multiplier=10.5)
+    subject = read(vert_save_path, bone_attenuation_multiplier=2.5)
     drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX, reverse_x_axis=False).to(device)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10,
@@ -121,8 +121,8 @@ def animate_spine_reg():
     caseName = 'dukemei'
     isDualView = True
     vert_num = 'L3'
-    video_name = 'results/tuodao/{}_L3_dual.mp4'.format(caseName)
-    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
+    video_name = 'results/tuodao/{}_spine_dual.mp4'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
     ct_dir = 'Data/tuodao/dukemei/{}.nii.gz'.format(caseName)
     vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
@@ -151,7 +151,8 @@ def animate_spine_reg():
     # plt.imshow(rgb_la_gt)
     # plt.colorbar()
     # plt.show()
-    subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
+    # subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
+    subject = read(ct_dir, bone_attenuation_multiplier=10.5)
     drr_generator = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 15,
@@ -175,18 +176,25 @@ def animate_spine_reg():
         itr = drr_generator(dual_pose, parameterization="matrix")
         # ap_dual_rot = torch.concat((ap_update_rot, la_update_rot), dim=0)
         # la_dual_trans = torch.concat((ap_update_trans, la_update_trans), dim=0)
-        # print(ap_dual_rot)
-        # print(la_dual_trans)
         # itr = drr_generator(ap_dual_rot, la_dual_trans, parameterization="euler_angles", convention="ZXY")
         # print(itr.shape)
         # itr = torch.permute(itr, (0, 1, 3, 2))
         itr = itr.squeeze().cpu().numpy()
         if isDualView:
+            # 写入边缘覆盖到xray上
             ap_contour = extract_img_overlay(itr[0, :])
             la_contour = extract_img_overlay(itr[1, :])
             rgb_mov = dual_view_joint(ap_contour, la_contour)
             rgb_gt = dual_view_joint(rgb_ap_gt, rgb_la_gt)
             result = cv2.addWeighted(rgb_gt, 1, rgb_mov, 0.8, 0)
+            # 只写入drr图像
+            # ap_normalized = cv2.normalize(itr[0, :], None, 0, 255.0,
+            #                               cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+            # la_normalized = cv2.normalize(itr[1, :], None, 0, 255.0,
+            #                               cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+            # ap_rgb = cv2.cvtColor(ap_normalized, cv2.COLOR_GRAY2BGR)
+            # la_rgb = cv2.cvtColor(la_normalized, cv2.COLOR_GRAY2BGR)
+            # result = dual_view_joint(ap_rgb, la_rgb)
         else:
             ap_contour = extract_img_overlay(itr[0, :], sigma=0.5)
             result = cv2.addWeighted(rgb_ap_gt, 1, ap_contour, 0.8, 0)
@@ -617,10 +625,48 @@ def test_gt_overlay():
     plt.show()
 
 
+def generate_final_drr():
+    caseName = 'dukemei'
+    vert_num = 'L3'
+    results_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
+    ct_dir = 'Data/tuodao/dukemei/{}.nii.gz'.format(caseName)
+    vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
+    ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
+    la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
+    ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(ap_xml_path)
+    la_Xdir, la_Ydir, _, _, _, la_Wld_Offset = read_xml(la_xml_path)
+    poses_data = pd.read_csv(results_path)
+    DELX = Xray_H / 122 * ap_spacing
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
+    subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
+    drr_generator = DRR(subject, sdd=SDD, height=976, delx=ap_spacing, patch_size=122, reverse_x_axis=False).to(device)
+    pose = (
+        torch.tensor(poses_data.iloc[-1, :][["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
+    )
+    print(pose)
+    pose_unfixed = convert(pose[0, :3].unsqueeze(0), pose[0, 3:].unsqueeze(0), parameterization="euler_angles", convention="ZYX")
+    print(pose_unfixed.matrix)
+    ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+    la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
+    dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
+    itr = drr_generator(dual_pose, parameterization="matrix")
+    itr = itr.squeeze().cpu().numpy()
+    ap_img = sitk.GetImageFromArray(itr[0, :])
+    # ap_img = resample_img(ap_img, new_width=976)
+    la_img = sitk.GetImageFromArray(itr[1, :])
+    # la_img = resample_img(la_img, new_width=976)
+    # sitk.WriteImage(ap_img, 'results/tuodao/drr_results/ap_{}_{}_drr.nii.gz'.format(caseName, vert_num))
+    # sitk.WriteImage(la_img, 'results/tuodao/drr_results/la_{}_{}_drr.nii.gz'.format(caseName, vert_num))
+    del drr_generator
+
+
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     animate_reg_process()
     # animate_spine_reg()
+    # generate_final_drr()
     # test_gt_overlay()
     # reg_process_visual_3d()
     # reg_real_visual_3d()
