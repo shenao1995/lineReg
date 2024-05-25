@@ -27,7 +27,7 @@ def ncc(I, J, device='cuda', win=None, eps=1e-10):
 
 
 # Gradient-NCC loss
-def gradncc(I, J, mask=None, device='cuda', win=None, eps=1e-10):
+def gradncc(I, J, mask_used=False, mask=None, device='cuda', win=None, eps=1e-10):
     # Compute filters
     with torch.no_grad():
         kernel_X = torch.Tensor([[[[1, 0, -1], [2, 0, -2], [1, 0, -1]]]])
@@ -46,8 +46,9 @@ def gradncc(I, J, mask=None, device='cuda', win=None, eps=1e-10):
     Iy = SobelY(I)
     Jx = SobelX(J)
     Jy = SobelY(J)
-    Jx = Jx * mask
-    Jy = Jy * mask
+    if mask_used:
+        Jx = Jx * mask
+        Jy = Jy * mask
     # plt.subplot(1, 4, 1)
     # plt.imshow(Ix[0, :].squeeze().detach().cpu().numpy())
     # plt.subplot(1, 4, 2)
