@@ -3,14 +3,15 @@ LineReg
 
 > Semantic edges-guided 2D/3D registration in PyTorch
 
-[![Paper shield](https://img.shields.io/badge/arXiv-2208.12737-red.svg)](http://www.cjig.cn/jig/ch/reader/view_abstract.aspx?flag=2&file_no=202401020000001&journal_id=jig)
+[![Paper shield](notebooks/20240817134643.png)](http://www.cjig.cn/jig/ch/reader/view_abstract.aspx?flag=2&file_no=202401020000001&journal_id=jig)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `LineReg` is a PyTorch-based semantic edges-guided 2D/3D registration methods for vertebrae in radiographs
 
-1. Differentiable X-ray rendering
-2. GPU-accelerated synthesis and optimization
-3. A pure Python implementation
+1. Single-View/Dual-View 2D/3D registration methods for vertebrae
+2. Simulation images study or real x-ray study 
+3. Differentiable X-ray rendering
+4. GPU-accelerated synthesis and optimization
 
 Most importantly, `DiffDRR` implements DRR rendering as a PyTorch module, making it interoperable in deep learning pipelines.
 
@@ -33,36 +34,6 @@ pip install -e 'DiffDRR/[dev]'
 
 The following minimal example specifies the geometry of the projectional radiograph imaging system and traces rays through a CT volume:
 
-``` python
-import matplotlib.pyplot as plt
-import torch
-
-from diffdrr.drr import DRR
-from diffdrr.data import load_example_ct
-from diffdrr.visualization import plot_drr
-
-# Read in the volume and get its origin and spacing in world coordinates
-subject = load_example_ct()
-
-# Initialize the DRR module for generating synthetic X-rays
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-drr = DRR(
-    subject,     # An object storing the CT volume, origin, and voxel spacing
-    sdd=1020.0,  # Source-to-detector distance (i.e., focal length)
-    height=200,  # Image height (if width is not provided, the generated DRR is square)
-    delx=2.0,    # Pixel spacing (in mm)
-).to(device)
-
-# Set the camera pose with rotations (yaw, pitch, roll) and translations (x, y, z)
-rotations = torch.tensor([[0.0, 0.0, 0.0]], device=device)
-translations = torch.tensor([[0.0, 850.0, 0.0]], device=device)
-
-# 📸 Also note that DiffDRR can take many representations of SO(3) 📸
-# For example, quaternions, rotation matrix, axis-angle, etc...
-img = drr(rotations, translations, parameterization="euler_angles", convention="ZXY")
-plot_drr(img, ticks=False)
-plt.show()
-```
 
 ![](notebooks/index_files/figure-commonmark/cell-2-output-1.png)
 
@@ -103,53 +74,7 @@ The full example is available at
 
 #### *🆕 Examples on Real-World Data 🆕*
 
-For examples running `DiffDRR` on real surgical datasets, check out our latest work, [`DiffPose`](https://github.com/eigenvivek/DiffPose):
 
-![](https://github.com/eigenvivek/DiffPose/blob/main/experiments/test_time_optimization.gif)
-
-This work includes a lot of real-world usecases of `DiffDRR` including
-- Using `DiffDRR` as a layer in a deep learning architecture
-- Alignment of real X-rays and rendered DRRs
-- Achieving sub-millimeter registration accuracy very quickly
-
-### X-ray Segmentation
-
-`DiffDRR` can project 3D labelmaps into 2D simply using perspective geometry, helping identify particular structures in simulated X-rays
-(these labels come from the [TotalSegmentator v2 dataset](https://github.com/wasserth/TotalSegmentator)):
-
-![](notebooks/index_files/segmentation.png)
-
-### Volume Reconstruction
-
-`DiffDRR` is differentiable with respect to the 3D volume as well as camera poses.
-Therefore, it could (in theory) be used for volume reconstruction via differentiable
-rendering. However, this feature has not been robustly tested and is currently 
-under active development (see [`reconstruction.ipynb`](https://vivekg.dev/DiffDRR/tutorials/reconstruction.html))!
-
-## Development
-
-`DiffDRR` source code, docs, and CI are all built using
-[`nbdev`](https://nbdev.fast.ai/). To get set up with `nbdev`, install
-the following
-
-``` zsh
-mamba install jupyterlab nbdev -c fastai -c conda-forge 
-nbdev_install_quarto  # To build docs
-nbdev_install_hooks  # Make notebooks git-friendly
-```
-
-Running `nbdev_help` will give you the full list of options. The most
-important ones are
-
-``` zsh
-nbdev_preview  # Render docs locally and inspect in browser
-nbdev_clean    # NECESSARY BEFORE PUSHING
-nbdev_test     # tests notebooks
-nbdev_export   # builds package and builds docs
-```
-
-For more details, follow this [in-depth
-tutorial](https://nbdev.fast.ai/tutorials/tutorial.html).
 
 ## How does `DiffDRR` work?
 
