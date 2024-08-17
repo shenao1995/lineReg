@@ -19,13 +19,13 @@ import h5py
 from monai.transforms import LoadImage, ScaleIntensity
 from diffdrr.drr import DRR
 import pyvista
-from diffdrr.visualization import drr_to_mesh, img_to_mesh
+from diffdrr.visualization import drr_to_mesh, img_to_mesh, plot_drr
 from IPython.display import IFrame
 # from diffpose.visualization import fiducials_to_mesh, lines_to_mesh
 from sklearn.metrics import mean_absolute_error
-from diffdrr.pose import convert
+from diffdrr.pose import convert, matrix_to_euler_angles, RigidTransform
 from tools import get_drr, read_bg_img, extract_img_overlay, dual_view_joint, resample_img, read_xml, crop_ct_vert, \
-    get_ext_pose, update_pose
+    get_ext_pose, update_pose, tuodao_to_diffdrr
 from diffpose.visualization import overlay_edges
 from diffdrr.data import read
 import seaborn as sns
@@ -68,7 +68,7 @@ def animate_reg_process():
     # plt.colorbar()
     # plt.show()
     subject = read(vert_save_path, bone_attenuation_multiplier=2.5)
-    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX, reverse_x_axis=False).to(device)
+    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX, reverse_x_axis=True).to(device, dtype=torch.float32)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 10,
                                 (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
@@ -123,7 +123,7 @@ def animate_spine_reg():
     vert_num = 'L3'
     video_name = 'results/tuodao/{}_spine_dual.mp4'.format(caseName)
     results_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
-    ct_dir = 'Data/tuodao/dukemei/{}.nii.gz'.format(caseName)
+    ct_dir = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
     vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
     la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
@@ -153,7 +153,7 @@ def animate_spine_reg():
     # plt.show()
     # subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
     subject = read(ct_dir, bone_attenuation_multiplier=10.5)
-    drr_generator = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
+    drr_generator = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=True).to(device, dtype=torch.float32)
     if isDualView:
         video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 15,
                                 (rgb_ap_gt.shape[0] * 2, rgb_ap_gt.shape[1]))
@@ -566,12 +566,12 @@ def ssim(imageA, imageB):
 def test_gt_overlay():
     caseName = 'dukemei'
     isDualView = True
-    results_path = 'results/tuodao/{}_L3_dual_pose.csv'.format(caseName)
+    results_path = 'results/tuodao/{}_L3_spine_dual_pose.csv'.format(caseName)
     poses_data = pd.read_csv(results_path)
     # print(poses_data.iloc[-1, 0])
     reader = LoadImage(ensure_channel_first=True, image_only=False)
-    DELX = 1.1574750505387783
-    ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
+    # ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
+    ctDir = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
     bg_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
     la_bg_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
@@ -579,50 +579,97 @@ def test_gt_overlay():
     rgb_ap_gt = read_bg_img(bg_path, reader)
     ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(ap_xml_path)
     la_Xdir, la_Ydir, _, _, _, la_Wld_Offset = read_xml(la_xml_path)
+    DELX = Xray_H / 256 * ap_spacing
+    ini_pose = torch.zeros(1, 6).to(device)
+    ap_wld_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
+    la_wld_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
+    print(ap_wld_extrinsic_update.matrix)
     rgb_la_gt = read_bg_img(la_bg_path, reader)
     subject = read(ctDir, bone_attenuation_multiplier=10.5)
-    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX).to(device)
-    rotations = (
-        torch.tensor([[poses_data.iloc[-1, 0], poses_data.iloc[-1, 1], poses_data.iloc[-1, 2]]])
-        .to(device)
-    )
-    translations = (
-        torch.tensor([[poses_data.iloc[-1, 3], poses_data.iloc[-1, 4], poses_data.iloc[-1, 5]]]).to(device)
-    )
-    print(rotations)
-    print(translations)
-    # coarse_trans = torch.tensor([[-5, 5, 10]]).to(device)
-    # coarse_rot = torch.tensor([[torch.pi/9, -torch.pi / 60, -torch.pi/60]]).to(device)
-    # translations = translations + coarse_trans
-    # rotations = rotations + coarse_rot
+    drr_generator = DRR(subject, sdd=SDD, height=256, delx=DELX, reverse_x_axis=True).to(device, dtype=torch.float32)
+    # rotations = (
+    #     torch.tensor([[poses_data.iloc[-1, 0], poses_data.iloc[-1, 1], poses_data.iloc[-1, 2]]])
+    #     .to(device, dtype=torch.float32)
+    # )
+    # translations = (
+    #     torch.tensor([[poses_data.iloc[-1, 3], poses_data.iloc[-1, 4], poses_data.iloc[-1, 5]]]).to(device, dtype=torch.float32)
+    # )
+    # isocenter = subject.get_images(intensity_only=False)[0].get_center()
+    ct_img = sitk.ReadImage(ctDir)
+    ct_origin = ct_img.GetOrigin()
+    # print(isocenter)
+    # print(subject.get_images(intensity_only=False)[0].origin)
+    # ct_origin = subject.get_images(intensity_only=False)[0].origin
+    print(ct_origin)
+    # (-156.19430547952652, -156.19430547952652, -115.0)
+    # Landmarks = torch.tensor([[[130.71266 + ct_origin[0] + 28.005310118198395 - 26.59276825,
+    #                             159.6568 + ct_origin[1] + 16.157302916049957 - 8.86425608,
+    #                             110.01028 + ct_origin[2] + 435.76300048828125 + 8.75],
+    #                            [130.93 + ct_origin[0] + 28.005310118198395 - 26.59276825,
+    #                             152.10477 + ct_origin[1] + 16.157302916049957 - 8.86425608,
+    #                             74.566124 + ct_origin[2] + 435.76300048828125 + 8.75]]]).to(device, dtype=torch.float32)
+    Landmarks = torch.tensor([[[130.71266 + ct_origin[0] + 28.005310118198395,
+                                159.6568 + ct_origin[1] - 16.157302916049957,
+                                110.01028 + ct_origin[2] + 435.76300048828125],
+                               [130.93 + ct_origin[0] + 28.005310118198395,
+                                152.10477 + ct_origin[1] - 16.157302916049957,
+                                74.566124 + ct_origin[2] + 435.76300048828125]]]).to(device, dtype=torch.float32)
+    print(Landmarks)
     pose = (
         torch.tensor([[poses_data.iloc[-1, 0], poses_data.iloc[-1, 1], poses_data.iloc[-1, 2],
                        poses_data.iloc[-1, 3], poses_data.iloc[-1, 4], poses_data.iloc[-1, 5]]]).to(device)
     )
-    ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, float(ap_Wld_Offset[1]), pose.float())
-    print(float(ap_Wld_Offset[1]))
-    print(float(la_Wld_Offset[0]))
-    la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, float(la_Wld_Offset[0]), pose.float())
-    dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
-    itr = drr_generator(dual_pose, parameterization="matrix")
-    # itr = torch.permute(itr, (0, 1, 3, 2))
-    itr = itr.squeeze().cpu().numpy()
-    ap_contour = extract_img_overlay(itr[0, :])
-    # print(np.max(ap_contour))
-    ap_contour_gray = cv2.cvtColor(ap_contour, cv2.COLOR_BGR2GRAY)
-    ap_contour_gray = np.where(ap_contour_gray != 0, 1, 0)
-    out_ap_edge = sitk.GetImageFromArray(ap_contour_gray)
-    sitk.WriteImage(out_ap_edge, 'Data/tuodao/{}/X/gt_edge_ap.nii.gz'.format(caseName))
-    la_contour = extract_img_overlay(itr[1, :])
-    la_contour_gray = cv2.cvtColor(la_contour, cv2.COLOR_BGR2GRAY)
-    la_contour_gray = np.where(la_contour_gray != 0, 1, 0)
-    out_la_edge = sitk.GetImageFromArray(la_contour_gray)
-    sitk.WriteImage(out_la_edge, 'Data/tuodao/{}/X/gt_edge_la.nii.gz'.format(caseName))
-    rgb_mov = dual_view_joint(ap_contour, la_contour)
-    rgb_gt = dual_view_joint(rgb_ap_gt, rgb_la_gt)
-    result = cv2.addWeighted(rgb_gt, 1, rgb_mov, 0.5, 0)
-    plt.imshow(result)
+    print(pose)
+    ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
+    la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
+    # zero = torch.tensor([[0.0, 0.0, 0.0]]).to(device)
+    # R = convert(
+    #     rotations.float(),
+    #     zero,
+    #     parameterization="euler_angles",
+    #     convention="ZXY",
+    # )
+    # t = convert(
+    #     zero,
+    #     translations.float(),
+    #     parameterization="euler_angles",
+    #     convention="ZXY",
+    # )
+    # pose = t.compose(R)
+    # dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
+    points2d = drr_generator.perspective_projection(ap_extrinsic_update, Landmarks)
+    # print(points2d.squeeze().cpu().numpy()[0, :])
+    ap_gt_points2d = torch.tensor([[[133.24644312, 138.08055382], [186.53122916, 124.30661269]]])
+    la_gt_points2d = torch.tensor([[[132.54120608, 119.51078905], [184.44714033, 103.5694173]]])
+    itr = drr_generator(la_extrinsic_update.matrix, parameterization="matrix")
+    # print(euclidean_distance(points2d.squeeze().cpu().numpy()[0, :], ap_gt_points2d.squeeze().cpu().numpy()[0, :]))
+    axs = plot_drr(torch.from_numpy(rgb_ap_gt).unsqueeze(0), ticks=False)
+    for p in points2d.squeeze().cpu().numpy():
+        axs[0].scatter(p[1], p[0], c="g", s=10)
+    for p in ap_gt_points2d.squeeze().cpu().numpy():
+        axs[0].scatter(p[1], p[0], c="r", s=10)
     plt.show()
+    # itr = itr.squeeze().cpu().numpy()
+    # ap_contour = extract_img_overlay(itr[0, :])
+    # print(np.max(ap_contour))
+    # ap_contour_gray = cv2.cvtColor(ap_contour, cv2.COLOR_BGR2GRAY)
+    # ap_contour_gray = np.where(ap_contour_gray != 0, 1, 0)
+    # out_ap_edge = sitk.GetImageFromArray(ap_contour_gray)
+    # sitk.WriteImage(out_ap_edge, 'Data/tuodao/{}/X/gt_edge_ap.nii.gz'.format(caseName))
+    # la_contour = extract_img_overlay(itr[1, :])
+    # la_contour_gray = cv2.cvtColor(la_contour, cv2.COLOR_BGR2GRAY)
+    # la_contour_gray = np.where(la_contour_gray != 0, 1, 0)
+    # out_la_edge = sitk.GetImageFromArray(la_contour_gray)
+    # sitk.WriteImage(out_la_edge, 'Data/tuodao/{}/X/gt_edge_la.nii.gz'.format(caseName))
+    # rgb_mov = dual_view_joint(ap_contour, la_contour)
+    # rgb_gt = dual_view_joint(rgb_ap_gt, rgb_la_gt)
+    # result = cv2.addWeighted(rgb_gt, 1, rgb_mov, 0.5, 0)
+    # plt.imshow(result)
+    # plt.show()
+
+
+def euclidean_distance(p1, p2):
+    return np.linalg.norm(np.array(p1) - np.array(p2))
 
 
 def generate_final_drr():
@@ -643,10 +690,12 @@ def generate_final_drr():
     subject = read(ct_dir, vert_seg_path, labels=[1], bone_attenuation_multiplier=10.5)
     drr_generator = DRR(subject, sdd=SDD, height=976, delx=ap_spacing, patch_size=122, reverse_x_axis=False).to(device)
     pose = (
-        torch.tensor(poses_data.iloc[-1, :][["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(device)
+        torch.tensor(poses_data.iloc[-1, :][["alpha", "beta", "gamma", "bx", "by", "bz"]].values).unsqueeze(0).to(
+            device)
     )
     print(pose)
-    pose_unfixed = convert(pose[0, :3].unsqueeze(0), pose[0, 3:].unsqueeze(0), parameterization="euler_angles", convention="ZYX")
+    pose_unfixed = convert(pose[0, :3].unsqueeze(0), pose[0, 3:].unsqueeze(0), parameterization="euler_angles",
+                           convention="ZYX")
     print(pose_unfixed.matrix)
     ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, pose.float())
     la_extrinsic_update = update_pose(la_wld_extrinsic_update, pose.float())
@@ -662,12 +711,43 @@ def generate_final_drr():
     del drr_generator
 
 
+def test_proj_points():
+    caseName = 'dukemei'
+    # ctDir = 'Data/tuodao/{}/{}_L3.nii.gz'.format(caseName, caseName)
+    ctDir = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
+    ct_img = sitk.ReadImage(ctDir)
+    ct_origin = ct_img.GetOrigin()
+    # Landmarks = torch.tensor([[[130.71266 + ct_origin[0],
+    #                             159.6568 + ct_origin[1],
+    #                             110.01028 + ct_origin[2]],
+    #                            [130.93 + ct_origin[0],
+    #                             152.10477 + ct_origin[1],
+    #                             74.566124 + ct_origin[2]]]]).to(device, dtype=torch.float32)
+    Landmarks = torch.tensor([[[130.71266, 159.6568, 110.01028],
+                               [130.93, 152.10477, 74.566124]]]).to(device, dtype=torch.float32)
+    gt_pose = RigidTransform(torch.tensor(
+        [
+            [0.9877551794052124, 0.02449158765375614, 0.15407615900039673, -109.68846130371094],
+            [-0.007056186906993389, 0.9936026930809021, -0.11270549148321152, -51.7974739074707],
+            [-0.15585069358348846, 0.11023829132318497, 0.9816099405288696, -13.808695793151855],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )).to(device, dtype=torch.float32)
+    extrinsic = RigidTransform(torch.tensor([[-9.4794e-01, 3.1846e-01, 0.0000e+00, 2.8454e+02],
+                                             [3.1846e-01, 9.4794e-01, -0.0000e+00, 6.8389e+02],
+                                             [0.0000e+00, 0.0000e+00, 1.0000e+00, 8.2500e+01],
+                                             [0.0000e+00, 0.0000e+00, 0.0000e+00, 1.0000e+00]])).to(device, dtype=torch.float32)
+    tuodaoPose = tuodao_to_diffdrr(gt_pose, extrinsic)
+    print(tuodaoPose(Landmarks))
+
+
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    animate_reg_process()
+    # animate_reg_process()
     # animate_spine_reg()
     # generate_final_drr()
-    # test_gt_overlay()
+    test_gt_overlay()
+    # test_proj_points()
     # reg_process_visual_3d()
     # reg_real_visual_3d()
     # cal_error()

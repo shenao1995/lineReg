@@ -236,7 +236,7 @@ def read_xray_and_crop():
 
 
 def png2nii():
-    file_path = 'Data/tuodao/bimeihua/X/x_la.tif'
+    file_path = 'Data/tuodao/dukemei/X/origin_pos/la_x.tif'
     img = cv2.imread(file_path)
     img_new = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     # img_tensor = torch.tensor(img_new)
@@ -248,7 +248,7 @@ def png2nii():
     # resized_img = resample_img(out_img, new_width=256)
     print(out_img.GetSize())
     print(out_img.GetSpacing())
-    sitk.WriteImage(out_img, 'Data/tuodao/bimeihua/X/bimeihua_la.nii.gz')
+    sitk.WriteImage(out_img, 'Data/tuodao/dukemei/X/origin_pos/dukemei_la.nii.gz')
 
 
 def resize_img():
@@ -427,12 +427,12 @@ def optimize_xray():
 
 if __name__ == '__main__':
     # test_ncc()
-    # png2nii()
+    png2nii()
     # dcm2nii()
     # bbx_crop_gt_vert()
     # read_xray_and_crop()
     # generate_gt_drr()
-    generate_mov_drr()
+    # generate_mov_drr()
     # crop_image()
     # inverse_img()
     # crop_region()

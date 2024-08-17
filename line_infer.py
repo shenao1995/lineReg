@@ -24,8 +24,6 @@ import SimpleITK as sitk
 
 def infer_method(model, input_tensor=None, input_list=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    input_size = 256
-    img_size = 256
     if input_tensor:
         img_list = [torch.squeeze(input_tensor).to(device)]
     else:
@@ -35,7 +33,6 @@ def infer_method(model, input_tensor=None, input_list=None):
     keys = ["img"]
     infer_transforms = Compose(
         [
-            # LoadImaged(keys=keys),
             EnsureChannelFirstd(keys=keys, channel_dim="no_channel"),
             Resized(keys=keys, spatial_size=(256, 256), mode='bilinear',
                     align_corners=True),
@@ -49,9 +46,9 @@ def infer_method(model, input_tensor=None, input_list=None):
     # post_trans = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.5), RemoveSmallObjects(min_size=60), Flip(spatial_axis=0)])
     # saver = SaveImage(output_dir="./output", output_ext=".nii", output_postfix="seg",
     #                   separate_folder=False)
-    # net.eval()
     with torch.enable_grad():
         for d in test_loader:
             image = d["img"].to(device)
+            print(image.shape)
             outputs = model(image)
     return outputs

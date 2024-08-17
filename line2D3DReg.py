@@ -5,12 +5,10 @@ import torch
 from tqdm import tqdm
 import SimpleITK as sitk
 from diffdrr.drr import DRR
-from monai.losses import DiceLoss, DiceCELoss, GeneralizedDiceLoss, SSIMLoss, HausdorffDTLoss
+from monai.losses import DiceLoss, DiceCELoss
+from diffdrr.metrics import NormalizedCrossCorrelation2d
 import time
 from line_infer import infer_method
-from tools import get_initial_parameters
-from monai.networks.utils import one_hot
-from losses.MaskedGNCCLoss import MaskGradientNormalizedCrossCorrelation2d, MaskNormalizedCrossCorrelation2d
 from tools import get_drr, get_lineCenter_offset, crop_ct_vert, gaussian_preprocess, resample_img, \
     bbx_crop_gt_vert, HE_optimize, read_xml, get_ext_pose, update_pose, masks_to_boxes
 from sklearn.metrics import mean_absolute_error
@@ -23,8 +21,8 @@ from monai.networks.nets import AttentionUnet
 def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_name, save_dir, x_saves,
                xml_paths, line_paths=None):
     # 读取椎骨CT
-    offsetx, offsety, offsetz, vert_img, vert_path = crop_ct_vert(origin_ct_path, seg_path, save_dir)
-    offset_trans = np.array([offsetx, offsety, offsetz])
+    # offsetx, offsety, offsetz, vert_img, vert_path = crop_ct_vert(origin_ct_path, seg_path, save_dir)
+    # offset_trans = np.array([offsetx, offsety, offsetz])
     ap_Xdir, ap_Ydir, ap_spacing, SDD, Xray_H, ap_Wld_Offset = read_xml(xml_paths[0])
     la_Xdir, la_Ydir, la_spacing, _, _, la_Wld_Offset = read_xml(xml_paths[1])
     ap_refine_gt, ap_mask = preliminary_process(xray_paths[0], 256, ap_spacing, boundingbox_paths[0], x_saves[0])
@@ -34,6 +32,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     ap_line = line_preprocess(line_paths[0])
     la_line = line_preprocess(line_paths[1])
     ini_pose = torch.zeros(1, 6).to(device)
+    ini_pose[:, 1] = torch.pi
     ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
     la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
     ap_init = update_pose(ap_extrinsic_update, ini_pose)
@@ -42,13 +41,12 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     COARSE_DELX = Xray_H / 122 * ap_spacing
     REFINE_DELX = Xray_H / 256 * ap_spacing
     print(COARSE_DELX)
-    # drr_gene = get_drr(img_path=vert_path,
-    #                    SDD=SDD,
-    #                    DELX=cropped_spacing)
-    ct_subject = read(origin_ct_path, bone_attenuation_multiplier=2.5)
-    coarse_drr = DRR(ct_subject, sdd=SDD, height=122, delx=COARSE_DELX, reverse_x_axis=False).to(device)
-    vert_subject = read(vert_path, bone_attenuation_multiplier=2.5)
-    refine_drr = DRR(vert_subject, sdd=SDD, height=256, delx=REFINE_DELX, reverse_x_axis=False).to(device)
+    ct_subject = read(origin_ct_path, bone_attenuation_multiplier=10.5)
+    coarse_drr = DRR(ct_subject, sdd=SDD, height=122, delx=COARSE_DELX, reverse_x_axis=True).to(device,
+                                                                                                dtype=torch.float32)
+    vert_subject = read(origin_ct_path, seg_path, labels=[1], bone_attenuation_multiplier=10.5)
+    refine_drr = DRR(vert_subject, sdd=SDD, height=256, delx=REFINE_DELX, reverse_x_axis=True).to(device,
+                                                                                                  dtype=torch.float32)
     ap_ini_drr = coarse_drr(ap_init)
     la_ini_drr = coarse_drr(la_init)
     plt.subplot(2, 2, 1)
@@ -63,50 +61,61 @@ def reg_method(origin_ct_path, seg_path, xray_paths, boundingbox_paths, case_nam
     plt.close()
     # 优化算法
     T1 = time.time()
-    coare_pose = coarse_reg_opt(coarse_drr, [ap_coarse_gt, la_coarse_gt], case_name, ini_pose,
-                                ap_extrinsic_update, la_extrinsic_update)
-    coare_pose = torch.from_numpy(coare_pose).unsqueeze(0).to(device)
-    coare_pose[:, 3], coare_pose[:, 4], coare_pose[:, 5] = coare_pose[:, 3] - offset_trans[0], \
-                                                           coare_pose[:, 4] - offset_trans[1], \
-                                                           coare_pose[:, 5] + offset_trans[2]
-    print(coare_pose)
+    coarse_pose = coarse_reg_opt(coarse_drr, [ap_coarse_gt, la_coarse_gt], ini_pose,
+                                 ap_extrinsic_update, la_extrinsic_update)
+    del coarse_drr
+    coarse_pose = torch.from_numpy(coarse_pose).unsqueeze(0).to(device)
+    # coarse_pose[:, 3], coarse_pose[:, 4], coarse_pose[:, 5] = coarse_pose[:, 3] - offset_trans[0], \
+    #                                                           coarse_pose[:, 4] + offset_trans[1], \
+    #                                                           coarse_pose[:, 5] - offset_trans[2]
+    print(coarse_pose)
+    ap_coarse = update_pose(ap_extrinsic_update, coarse_pose)
+    la_coarse = update_pose(la_extrinsic_update, coarse_pose)
+    ap_coarse_drr = refine_drr(ap_coarse)
+    la_coarse_drr = refine_drr(la_coarse)
+    plt.subplot(2, 2, 1)
+    plt.imshow(ap_coarse_drr.squeeze().detach().cpu().numpy(), cmap='gray')
+    plt.subplot(2, 2, 2)
+    plt.imshow(la_coarse_drr.squeeze().detach().cpu().numpy(), cmap='gray')
+    plt.subplot(2, 2, 3)
+    plt.imshow(ap_refine_gt.squeeze().detach().cpu().numpy(), cmap='gray')
+    plt.subplot(2, 2, 4)
+    plt.imshow(la_refine_gt.squeeze().detach().cpu().numpy(), cmap='gray')
+    plt.show()
+    plt.close()
     refine_reg_optimize(refine_drr, [ap_refine_gt, la_refine_gt], [ap_line, la_line], [ap_mask, la_mask], case_name,
-                        coare_pose, ap_extrinsic_update, la_extrinsic_update)
+                        coarse_pose, ap_extrinsic_update, la_extrinsic_update)
+
     T2 = time.time()
     print('配准耗时为:%.4s秒' % (T2 - T1))
-    del coarse_drr
+    del refine_drr
 
 
 def coarse_reg_opt(
         reg: DRR,
         gt_imgs,
-        samplename,
         initial_pose,
         ap_wld_extrinsic_update,
         la_wld_extrinsic_update,
-        n_itrs=150):
+        n_itrs=100):
     T1 = time.time()
     # 损失函数，先尝试的归一化互相关loss
     GNCC_loss = gradncc
+    NCC_loss = NormalizedCrossCorrelation2d()
     params = []
     losses = []
-    offset_range = 18
+    offset_range = 9
     rot = initial_pose[:, :3].cpu().numpy().squeeze()
     trans = initial_pose[:, 3:].cpu().numpy().squeeze()
     bound = [[rot[0] - np.pi / offset_range, rot[0] + np.pi / offset_range],
              [rot[1] - np.pi / offset_range, rot[1] + np.pi / offset_range],
              [rot[2] - np.pi / offset_range, rot[2] + np.pi / offset_range],
-             [trans[0] - 65, trans[0] + 65], [trans[1] - 110, trans[1] + 110], [trans[2] - 60, trans[2] + 60]]
+             [trans[0] - 100, trans[0] + 100], [trans[1] - 200, trans[1] + 200], [trans[2] - 100, trans[2] + 100]]
     bound = np.array(bound)
     # 迭代循环
-    early_stop = False
     rtvec = np.concatenate([rot, trans])
-    steps = np.concatenate([np.zeros(3), np.zeros(3)])
-    # optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, population_size=50, lr_adapt=True)
     kDEG2RAD = np.pi / 180
-    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 65, 110, 60])
-    # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
-    # optimizer = CMAwM(mean=rtvec, sigma=2.0, bounds=bound, population_size=100, steps=steps, cov=covs)
+    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 100, 200, 100])
     optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
     for itr in tqdm(range(n_itrs), ncols=100):
         solutions = []
@@ -125,11 +134,11 @@ def coarse_reg_opt(
             ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
             # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            gncc_loss = ap_ncc_loss * 0.7 + la_ncc_loss * 0.3
+            dual_ncc_loss = ap_ncc_loss * 0.7 + la_ncc_loss * 0.3
             # gncc_loss = ap_ncc_loss
-            total_loss = gncc_loss
+            total_loss = dual_ncc_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), total_loss.detach().squeeze().cpu().numpy()))
-            op_loss += gncc_loss.item()
+            op_loss += dual_ncc_loss.item()
             ap_gncc_loss += ap_ncc_loss.item()
             la_gncc_loss += la_ncc_loss.item()
         optimizer.tell(solutions)
@@ -174,7 +183,7 @@ def refine_reg_optimize(
     gncc_losses = []
     line_losses = []
     # ground_truth = one_hot(ground_truth, num_classes=2)
-    offset_range = 36
+    offset_range = 18
     rot = initial_pose[:, :3].cpu().numpy().squeeze()
     trans = initial_pose[:, 3:].cpu().numpy().squeeze()
     rtvec = initial_pose.cpu().numpy().squeeze()
@@ -182,11 +191,11 @@ def refine_reg_optimize(
     bound = [[rot[0] - np.pi / offset_range, rot[0] + np.pi / offset_range],
              [rot[1] - np.pi / offset_range, rot[1] + np.pi / offset_range],
              [rot[2] - np.pi / offset_range, rot[2] + np.pi / offset_range],
-             [trans[0] - 15, trans[0] + 15], [trans[1] - 30, trans[1] + 30], [trans[2] - 15, trans[2] + 15]]
+             [trans[0] - 50, trans[0] + 50], [trans[1] - 100, trans[1] + 100], [trans[2] - 50, trans[2] + 50]]
     bound = np.array(bound)
     # 迭代循环
     kDEG2RAD = np.pi / 180
-    covs = np.diag([0.5 * kDEG2RAD, 2 * kDEG2RAD, 0.5 * kDEG2RAD, 15, 30, 15])
+    covs = np.diag([0.5 * kDEG2RAD, 2 * kDEG2RAD, 0.5 * kDEG2RAD, 50, 100, 50])
     # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
     optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
     log_dir = 'line_model/AttUNet_model1.pth'
@@ -204,9 +213,7 @@ def refine_reg_optimize(
         ap_gncc_sum_loss = 0
         la_gncc_sum_loss = 0
         for _ in range(optimizer.population_size):
-            # x_eval, x_tell = optimizer.ask()
             x_eval = optimizer.ask()
-            # print(x_tell)
             x_eval = torch.unsqueeze(torch.tensor(x_eval, dtype=torch.float, requires_grad=False,
                                                   device=device), 0)
             ap_extrinsic_update = update_pose(ap_wld_extrinsic_update, x_eval)
@@ -219,14 +226,10 @@ def refine_reg_optimize(
             ap_line_loss = DCE_loss(pred_lines[0, :].unsqueeze(0), gt_lines[0])
             la_line_loss = DCE_loss(pred_lines[1, :].unsqueeze(0), gt_lines[1])
             line_loss = (ap_line_loss + la_line_loss) / 2
-            # line_loss = ap_line_loss * 0.7 + la_line_loss * 0.3
             ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float(), mask_used=True, mask=gt_masks[0])
             la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float(), mask_used=True, mask=gt_masks[1])
-            # gncc_loss = ap_ncc_loss * 0.3 + la_ncc_loss * 0.7
             gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            # gncc_loss = la_ncc_loss
             total_loss = gncc_loss * 0.8 + line_loss * 0.2
-            # total_loss = gncc_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), total_loss.detach().squeeze().cpu().numpy()))
             dce_loss += line_loss.item()
             op_loss += gncc_loss.item()
@@ -319,15 +322,15 @@ if __name__ == '__main__':
     vert_num = 'L3'
     ct_path = 'Data/tuodao/{}/{}.nii.gz'.format(caseName, caseName)
     vert_seg_path = 'Data/tuodao/{}/{}_seg.nii.gz'.format(caseName, vert_num)
-    ap_gt_path = 'Data/tuodao/{}/X/{}_ap.nii.gz'.format(caseName, caseName)
-    ap_bbx_path = 'Data/tuodao/{}/X/{}_bbx_ap.nii.gz'.format(caseName, vert_num)
-    la_gt_path = 'Data/tuodao/{}/X/{}_la.nii.gz'.format(caseName, caseName)
-    la_bbx_path = 'Data/tuodao/{}/X/{}_bbx_la.nii.gz'.format(caseName, vert_num)
+    ap_gt_path = 'Data/tuodao/{}/X/origin_pos/{}_ap.nii.gz'.format(caseName, caseName)
+    ap_bbx_path = 'Data/tuodao/{}/X/origin_pos/{}_bbx_ap.nii.gz'.format(caseName, vert_num)
+    la_gt_path = 'Data/tuodao/{}/X/origin_pos/{}_la.nii.gz'.format(caseName, caseName)
+    la_bbx_path = 'Data/tuodao/{}/X/origin_pos/{}_bbx_la.nii.gz'.format(caseName, vert_num)
     vert_save_path = 'Data/tuodao/{}/{}_{}.nii.gz'.format(caseName, caseName, vert_num)
-    resized_x_ap_save_path = 'Data/tuodao/{}/X/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
-    resized_x_la_save_path = 'Data/tuodao/{}/X/{}_resized_x_la.nii.gz'.format(caseName, caseName)
-    line_ap_path = 'Data/tuodao/{}/X/{}_line_ap.nii.gz'.format(caseName, vert_num)
-    line_la_path = 'Data/tuodao/{}/X/{}_line_la.nii.gz'.format(caseName, vert_num)
+    resized_x_ap_save_path = 'Data/tuodao/{}/X/origin_pos/{}_resized_x_ap.nii.gz'.format(caseName, caseName)
+    resized_x_la_save_path = 'Data/tuodao/{}/X/origin_pos/{}_resized_x_la.nii.gz'.format(caseName, caseName)
+    line_ap_path = 'Data/tuodao/{}/X/origin_pos/{}_line_ap.nii.gz'.format(caseName, vert_num)
+    line_la_path = 'Data/tuodao/{}/X/origin_pos/{}_line_la.nii.gz'.format(caseName, vert_num)
     ap_xml_path = 'Data/tuodao/{}/X/View/180/calib_view.xml'.format(caseName)
     la_xml_path = 'Data/tuodao/{}/X/View/1/calib_view.xml'.format(caseName)
     reg_method(ct_path, vert_seg_path, [ap_gt_path, la_gt_path], [ap_bbx_path, la_bbx_path],

@@ -38,17 +38,16 @@ def reg_method(origin_ct_path, seg_path, xray_paths, case_name, x_saves, xml_pat
     ap_gt = xray_process(xray_paths[0], ap_spacing, x_saves[0])
     la_gt = xray_process(xray_paths[1], la_spacing, x_saves[1])
     ini_pose = torch.zeros(1, 6).to(device)
+    # ini_pose[0, 1] = torch.pi
     # print(ini_pose.shape)
     DELX = Xray_H / 122 * ap_spacing
     print(DELX)
     ap_extrinsic_update = get_ext_pose(ap_Xdir, ap_Ydir, ap_Wld_Offset, ini_pose, view='ap')
     la_extrinsic_update = get_ext_pose(la_Xdir, la_Ydir, la_Wld_Offset, ini_pose, view='la')
-    # ap_init = update_pose(ap_extrinsic_update, ini_pose)
-    # la_init = update_pose(la_extrinsic_update, ini_pose)
-    ap_init = get_wld_pose(ap_extrinsic_update)
-    la_init = get_wld_pose(la_extrinsic_update)
+    ap_init = update_pose(ap_extrinsic_update, ini_pose)
+    la_init = update_pose(la_extrinsic_update, ini_pose)
     subject = read(origin_ct_path, bone_attenuation_multiplier=10.5)
-    drr_gene = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=False).to(device)
+    drr_gene = DRR(subject, sdd=SDD, height=122, delx=DELX, reverse_x_axis=True).to(device, dtype=torch.float32)
     scaleInen = ScaleIntensity()
     ap_ini_drr = drr_gene(ap_init)
     la_ini_drr = drr_gene(la_init)
@@ -66,8 +65,7 @@ def reg_method(origin_ct_path, seg_path, xray_paths, case_name, x_saves, xml_pat
     plt.show()
     plt.close()
     # 优化算法
-    # optimize(drr_gene, [ap_gt, la_gt], case_name, scaleInen, ini_pose,
-    #          [ap_Xdir, ap_Ydir, la_Wld_Offset], [la_Xdir, la_Ydir, ap_Wld_Offset], ap_extrinsic_update, la_extrinsic_update)
+    optimize(drr_gene, [ap_gt, la_gt], case_name, scaleInen, ini_pose, ap_extrinsic_update, la_extrinsic_update)
     # bg_img_tensor = torch.permute(ground_truth, (0, 1, 3, 2))
     # animate_in_browser(params, len(params), drr, ground_truth)
     del drr_gene
@@ -79,8 +77,6 @@ def optimize(
         samplename,
         scaler,
         initial_pose,
-        ap_cam_param,
-        la_cam_param,
         ap_wld_extrinsic_update,
         la_wld_extrinsic_update,
         n_itrs=150,
@@ -89,7 +85,7 @@ def optimize(
     # 损失函数，先尝试的归一化互相关loss
     GNCC_loss = gradncc
     # SSIM_loss = SSIMLoss(spatial_dims=2)
-    # NCC_loss = NormalizedCrossCorrelation2d()
+    # GNCC_loss = NormalizedCrossCorrelation2d()
     # HD_loss = HausdorffDTLoss()
     # criterion = GeneralizedDiceLoss(include_background=False, to_onehot_y=True)
     min_generation = 0
@@ -102,7 +98,7 @@ def optimize(
     bound = [[rot[0] - np.pi / offset_range, rot[0] + np.pi / offset_range],
              [rot[1] - np.pi / offset_range, rot[1] + np.pi / offset_range],
              [rot[2] - np.pi / offset_range, rot[2] + np.pi / offset_range],
-             [trans[0] - 65, trans[0] + 65], [trans[1] - 110, trans[1] + 110], [trans[2] - 60, trans[2] + 60]]
+             [trans[0] - 100, trans[0] + 100], [trans[1] - 200, trans[1] + 200], [trans[2] - 100, trans[2] + 100]]
     bound = np.array(bound)
     # 迭代循环
     early_stop = False
@@ -110,15 +106,15 @@ def optimize(
     steps = np.concatenate([np.zeros(3), np.zeros(3)])
     # optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, population_size=50, lr_adapt=True)
     kDEG2RAD = np.pi / 180
-    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 65, 110, 60])
+    covs = np.diag([15 * kDEG2RAD, 30 * kDEG2RAD, 15 * kDEG2RAD, 100, 200, 100])
     # cov0s = [15 * kDEG2RAD, 15 * kDEG2RAD, 30 * kDEG2RAD, 25, 25, 50]
     # optimizer = CMAwM(mean=rtvec, sigma=2.0, bounds=bound, population_size=100, steps=steps, cov=covs)
     optimizer = CMA(mean=rtvec, sigma=2.0, bounds=bound, cov=covs, population_size=50)
     for itr in tqdm(range(n_itrs), ncols=100):
         solutions = []
         op_loss = 0
-        ap_gncc_loss = 0
-        la_gncc_loss = 0
+        ap_gncc_loss_sum = 0
+        la_gncc_loss_sum = 0
         for _ in range(optimizer.population_size):
             # x_eval, x_tell = optimizer.ask()
             x_eval = optimizer.ask()
@@ -133,14 +129,15 @@ def optimize(
             la_extrinsic_update = update_pose(la_wld_extrinsic_update, x_eval)
             dual_pose = torch.concat((ap_extrinsic_update.matrix, la_extrinsic_update.matrix), dim=0)
             estimate = reg(dual_pose, parameterization="matrix")
-            # ncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
-            ap_ncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
-            la_ncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
+            ap_gncc_loss = GNCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
+            la_gncc_loss = GNCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
+            # ap_ncc_loss = NCC_loss(estimate[0, :].unsqueeze(0), gt_imgs[0].float())
+            # la_ncc_loss = NCC_loss(estimate[1, :].unsqueeze(0), gt_imgs[1].float())
             # ap_ss_loss = SSIM_loss(estimate[0, :].unsqueeze(0).float(), gt_imgs[0].float())
             # la_ss_loss = SSIM_loss(estimate[1, :].unsqueeze(0).float(), gt_imgs[1].float())
-            # gncc_loss = (ap_ncc_loss + la_ncc_loss) / 2
-            gncc_loss = ap_ncc_loss * 0.7 + la_ncc_loss * 0.3
-            # gncc_loss = ap_ncc_loss
+            gncc_loss = ap_gncc_loss * 0.7 + la_gncc_loss * 0.3
+            # gncc_loss = ap_gncc_loss * 0.7 + la_gncc_loss * 0.3
+            # ncc_loss = ap_ncc_loss * 0.7 + la_ncc_loss * 0.3
             total_loss = gncc_loss
             solutions.append((x_eval.detach().squeeze().cpu().numpy(), total_loss.detach().squeeze().cpu().numpy()))
             # print(line_loss.item())
@@ -148,20 +145,21 @@ def optimize(
             # print(solutions)
             # gncc_loss = GNCC_loss(estimate.float(), ground_truth.float())
             op_loss += gncc_loss.item()
-            ap_gncc_loss += ap_ncc_loss.item()
-            la_gncc_loss += la_ncc_loss.item()
+            ap_gncc_loss_sum += ap_gncc_loss.item()
+            la_gncc_loss_sum += la_gncc_loss.item()
             # plt.subplot(1, 2, 1)
             # # plt.imshow(estimate[0, :].squeeze().detach().cpu().numpy())
             # plt.imshow(torch.argmax(pred_lines[0, :], dim=0).squeeze().detach().cpu().numpy())
             # plt.subplot(1, 2, 2)
             # plt.imshow(torch.argmax(pred_lines[1, :], dim=0).squeeze().detach().cpu().numpy())
             # plt.show()
+        # print(x_eval)
         optimizer.tell(solutions)
         result = torch.unsqueeze(torch.tensor(optimizer._mean, dtype=torch.float, requires_grad=False,
                                               device=device), 0)
         cur_loss = op_loss / optimizer.population_size
-        ap_cur_loss = ap_gncc_loss / optimizer.population_size
-        la_cur_loss = la_gncc_loss / optimizer.population_size
+        ap_cur_loss = ap_gncc_loss_sum / optimizer.population_size
+        la_cur_loss = la_gncc_loss_sum / optimizer.population_size
         losses.append(cur_loss)
         print(f"itr {itr + 1} ap_gncc loss: {ap_cur_loss:.4f} la_gncc loss: {la_cur_loss:.4f}")
         alpha, beta, gamma = result[:, :3, ].squeeze().tolist()
