@@ -16,9 +16,9 @@ from diffdrr.metrics import NormalizedCrossCorrelation2d
 from utils import crop_ct_vert, extract_traditional_edge
 
 
-def reg_method(origin_ct_path, seg_path, save_dir, sampleName):
+def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     # 1. 读取椎骨CT及中心偏移
-    offsetx, offsety, offsetz = crop_ct_vert(origin_ct_path, seg_path, save_dir)
+    offsetx, offsety, offsetz = crop_ct_vert(origin_ct_path, seg_path, crop_vert_path=save_dir, vert_name=vertName)
     offset_trans = np.array([offsetx, offsety, offsetz])
 
     # 2. 投影仪及位姿参数设置
@@ -61,16 +61,16 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName):
     gt_img_np = ground_truth.squeeze().detach().cpu().numpy()
 
     # --- 新增：保存 bg_ground_truth 和 gt_line_np 为 png 图像 ---
-    os.makedirs('results/tuodao', exist_ok=True)
+    os.makedirs(f'results/{sampleName}/', exist_ok=True)
 
     # 提取 bg_ground_truth 的 numpy 数组并归一化到 0-255
     bg_img_np = bg_ground_truth.squeeze().detach().cpu().numpy()
     bg_norm = (bg_img_np - bg_img_np.min()) / (bg_img_np.max() - bg_img_np.min() + 1e-8) * 255.0
-    cv2.imwrite(f'results/tuodao/{sampleName}_bg_gt.png', bg_norm.astype(np.uint8))
+    cv2.imwrite(f'results/{sampleName}/bg_gt.png', bg_norm.astype(np.uint8))
 
     # 将 mask 边缘线 (0 或 1) 转为 0 和 255 保存
-    cv2.imwrite(f'results/tuodao/{sampleName}_gt_line.png', (gt_line_np * 255).astype(np.uint8))
-    print(f"已保存参考图像至 results/tuodao/{sampleName}_bg_gt.png 和 {sampleName}_gt_line.png")
+    cv2.imwrite(f'results/{sampleName}/gt_line.png', (gt_line_np * 255).astype(np.uint8))
+    print(f"已保存参考图像至 results/{sampleName}/_bg_gt.png 和 {sampleName}_gt_line.png")
 
     # 可视化 GT 与其连续的侧边缘线
     plt.figure(figsize=(10, 5))
@@ -222,7 +222,7 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
 
     df = pd.DataFrame(params_history, columns=["alpha", "beta", "gamma", "bx", "by", "bz"])
     df["loss"] = loss_history
-    csv_path = f'results/tuodao/{samplename}_cmaes_pose.csv'
+    csv_path = f'results/{samplename}/cmaes_pose.csv'
     df.to_csv(csv_path, index=False)
     print(f"优化结果已保存至: {csv_path}")
 
@@ -248,11 +248,17 @@ def get_initial_parameters(true_params):
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    caseName = 'bimeihua'
-    vert = 'L5'
 
-    ct_path = f'Data/total/{caseName}/{caseName}.nii.gz'
-    vert_seg_path = f'Data/total/{caseName}/{vert}_seg.nii.gz'
-    vert_save_path = f'Data/total/{caseName}/{caseName}_{vert}.nii.gz'
+    # 修改这里的参数配置
+    caseName = 'case1'
+    vert = 'L2'  # 只要修改这里为 L1 到 L5，程序就会自动去分割文件里找 21 到 25 的标签
 
-    reg_method(ct_path, vert_seg_path, vert_save_path, f'{caseName}_{vert}')
+    # 适配新的目录结构
+    ct_path = f'Data/{caseName}/ct.nii.gz'
+    vert_seg_path = f'Data/{caseName}/ct_seg.nii.gz'
+
+    # 裁剪后的椎骨体积保存路径
+    vert_save_path = f'Data/{caseName}/{caseName}_{vert}.nii.gz'
+
+    # 将 vertName (即 vert) 作为参数传给 reg_method
+    reg_method(ct_path, vert_seg_path, vert_save_path, f'{caseName}_{vert}', vertName=vert)
