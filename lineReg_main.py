@@ -95,7 +95,7 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
 def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial_rot, initial_trans, n_itrs=150):
     T1 = time.time()
 
-    ncc_metric = NormalizedCrossCorrelation2d().to(device)
+    gncc_metric = NormalizedCrossCorrelation2d().to(device)
 
     rot = initial_rot.cpu().numpy().squeeze()
     trans = initial_trans.cpu().numpy().squeeze()
@@ -127,7 +127,7 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
     for itr in tqdm(range(n_itrs), ncols=100):
         solutions = []
         op_loss_sum = 0
-        ncc_loss_sum = 0
+        gncc_loss_sum = 0
         dice_loss_sum = 0
 
         for _ in range(optimizer.population_size):
@@ -141,8 +141,8 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
             estimate = reg(est_pose.compose(vert_mat))
 
             # 1. 计算 NCC Loss
-            ncc_val = ncc_metric(estimate, gt_img)
-            ncc_loss = 1.0 - ncc_val.item()
+            gncc_val = gncc_metric(estimate, gt_img)
+            gncc_loss = 1.0 - gncc_val.item()
 
             # 2. 提取 moving 图像边缘，计算 Dice Loss
             est_line_np = extract_traditional_edge(estimate, threshold_ratio=0.08, margin_ratio=0.15)
@@ -152,17 +152,17 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
             dice_loss = 1.0 - (2.0 * intersection + 1e-8) / (union + 1e-8)
 
             # 3. 组合总 Loss
-            total_loss = ncc_loss + dice_weight * dice_loss
+            total_loss = gncc_loss + dice_weight * dice_loss
 
             solutions.append((x_eval, total_loss))
             op_loss_sum += total_loss
-            ncc_loss_sum += ncc_loss
+            gncc_loss_sum += gncc_loss
             dice_loss_sum += dice_loss
 
         optimizer.tell(solutions)
 
         cur_loss = op_loss_sum / optimizer.population_size
-        avg_ncc = ncc_loss_sum / optimizer.population_size
+        avg_ncc = gncc_loss_sum / optimizer.population_size
         avg_dice = dice_loss_sum / optimizer.population_size
 
         loss_history.append(cur_loss)
@@ -171,7 +171,7 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
 
         tqdm.write(f"Itr {itr + 1:03d} | Total: {cur_loss:.4f} (NCC: {avg_ncc:.4f}, Dice: {avg_dice:.4f})")
 
-        if itr > 5 and abs(loss_history[itr - 1] - cur_loss) < 1e-5:
+        if itr > 20 and abs(loss_history[itr - 1] - cur_loss) < 1e-5:
             tqdm.write(f"Converged early in {itr + 1} iterations.")
             break
 

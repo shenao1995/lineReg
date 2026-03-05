@@ -1,9 +1,9 @@
-# LineReg: Semantic edge-guided single-view 2D/3D registration for vertebrae in X-rays
+# LineReg
 
 ![Registration Animation](notebooks/combined_animation.gif)
 
 ## 📖 Introduction
-**LineReg** enables high-precision single-view 2D-3D spine registration. It robustly aligns X-rays and CTs by optimizing 6DoF camera poses using DRR generation, joint NCC-Dice loss, and CMA-ES search.
+**LineReg** enables high-precision single-view 2D-3D spine registration. It robustly aligns X-rays and CTs by optimizing 6DoF camera poses using DRR generation, joint GNCC-Dice loss, and CMA-ES search.
 
 ## 📰 News
 * Our paper has been accepted by *Medical Physics* ! ✔
@@ -46,13 +46,9 @@ You can modify the parameters in `lineReg_main.py` to set the registration targe
 python lineReg_main.py
 ```
 ```text
-Once the registration is complete, the system will automatically save the following in the results/ directory:
+Once the registration is complete, the pose results will be saved in the results/ directory:
 
 Pose records for each generation during the registration process (.csv)
-
-2D-3D joint evolution visualization animation (.gif)
-
-Static reference projection images and edge reference images (.png)
 ```
 
 ### 3. visualization
@@ -60,7 +56,11 @@ You can modify the parameters in `reg_process_vis.py` to set the visualization r
 ```bash
 python reg_process_vis.py
 ```
+```text
+2D-3D joint evolution visualization animation (.gif)
 
+Static reference projection images and edge reference images (.png)
+```
 
 ## Citing `LineReg`
 
