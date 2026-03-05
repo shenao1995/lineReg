@@ -3,7 +3,7 @@ LineReg
 
 > Semantic edges-guided 2D/3D registration in PyTorch
 
-[![Paper shield](notebooks/20240817134643.png)](http://www.cjig.cn/jig/ch/reader/view_abstract.aspx?flag=2&file_no=202401020000001&journal_id=jig)
+[![Paper shield](notebooks/mp_title.png)](http://www.cjig.cn/jig/ch/reader/view_abstract.aspx?flag=2&file_no=202401020000001&journal_id=jig)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `LineReg` is a PyTorch-based semantic edges-guided 2D/3D registration methods for vertebrae in radiographs

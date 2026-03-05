@@ -1,5 +1,3 @@
-import os
-
 import torch
 import matplotlib.pyplot as plt
 from monai.data import Dataset, DataLoader, decollate_batch, list_data_collate
@@ -16,7 +14,8 @@ from monai.transforms import (
     Activations,
     AsDiscrete,
     ToTensord,
-    RemoveSmallObjects
+    RemoveSmallObjects,
+    Resize
 )
 import numpy as np
 import SimpleITK as sitk
@@ -24,7 +23,7 @@ import SimpleITK as sitk
 
 def infer_method(model, input_tensor=None, input_list=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if input_tensor:
+    if input_tensor is not None:
         img_list = [torch.squeeze(input_tensor).to(device)]
     else:
         img_list = input_list
@@ -42,13 +41,20 @@ def infer_method(model, input_tensor=None, input_list=None):
     )
     test_ds = Dataset(data=test_files, transform=infer_transforms)
     test_loader = DataLoader(test_ds, batch_size=2, num_workers=0, collate_fn=list_data_collate)
-    # post_trans = Compose([Activations(softmax=True), AsDiscrete(argmax=True), RemoveSmallObjects(min_size=20)])
-    # post_trans = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.5), RemoveSmallObjects(min_size=60), Flip(spatial_axis=0)])
+    post_trans = Compose([Activations(sigmoid=True),
+                          AsDiscrete(threshold=0.5),
+                          RemoveSmallObjects(min_size=1)])
     # saver = SaveImage(output_dir="./output", output_ext=".nii", output_postfix="seg",
     #                   separate_folder=False)
-    with torch.enable_grad():
+    with torch.no_grad():
         for d in test_loader:
             image = d["img"].to(device)
-            print(image.shape)
+            # print(image.shape)
             outputs = model(image)
-    return outputs
+            outputs = [post_trans(i) for i in decollate_batch(outputs)]
+    resize = Resize(spatial_size=img_list[0].shape, mode='bilinear')
+    ap_line = resize(outputs[0])
+    # resize = Resize(spatial_size=img_list[1].shape, mode='bilinear')
+    # la_line = resize(outputs[1])
+    # return ap_line, la_line
+    return ap_line
