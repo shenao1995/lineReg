@@ -65,7 +65,7 @@ Static reference projection images and edge reference images (.png)
 ## Citing `LineReg`
 
 If you find `LineReg` useful in your work, please cite our
-[paper](https://arxiv.org/abs/2208.12737):
+[paper](https://doi.org/10.1002/mp.70385):
 
 [//]: # (    @inproceedings{gopalakrishnan2022fast,)
 
