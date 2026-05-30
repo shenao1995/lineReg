@@ -13,7 +13,12 @@ from diffdrr.drr import DRR
 from diffdrr.data import read
 from diffdrr.pose import convert, RigidTransform
 from diffdrr.metrics import NormalizedCrossCorrelation2d
-from utils import crop_ct_vert, extract_traditional_edge
+from utils import (
+    crop_ct_vert,
+    extract_traditional_edge,
+    extract_ap_body_side_fiducials_from_target_volume,
+    build_line_distance_map,
+)
 
 
 def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
@@ -33,9 +38,20 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     bg_drr_gene = DRR(bg_subject, sdd=SDD, height=imgsize, delx=delx, reverse_x_axis=True).to(device,
                                                                                               dtype=torch.float32)
 
-    subject = read(save_dir)
+    edge_points_3d = extract_ap_body_side_fiducials_from_target_volume(
+        vol_path=save_dir,
+        source="cropped_ct",
+        z_keep_ratio=(0.35, 0.75),
+        z_step=1,
+        x_profile_ratio=0.22,
+        morph_open_mm=1.5,
+        side_band_mm=1.5,
+        y_samples_per_slice=1,
+        lps_to_ras=True,
+    )
 
-    # 3. 初始化生成器 drr_gene
+    fiducials = torch.from_numpy(edge_points_3d).unsqueeze(0).to(dtype=torch.float32)
+    subject = read(save_dir, fiducials=fiducials)
     drr_gene = DRR(subject, sdd=SDD, height=imgsize, delx=delx, reverse_x_axis=True).to(device, dtype=torch.float32)
 
     # 构建 Ground Truth (正位 DRR)
@@ -58,6 +74,9 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
 
     # --- 提取 GT 的侧边线 ---
     gt_line_np = extract_traditional_edge(ground_truth, threshold_ratio=0.08, margin_ratio=0.15)
+    gt_line_np = (gt_line_np > 0).astype(np.uint8)
+    gt_dt_np, gt_line_np = build_line_distance_map(gt_line_np, dilate_radius=1)
+
     gt_img_np = ground_truth.squeeze().detach().cpu().numpy()
 
     # --- 新增：保存 bg_ground_truth 和 gt_line_np 为 png 图像 ---
@@ -71,7 +90,17 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     # 将 mask 边缘线 (0 或 1) 转为 0 和 255 保存
     cv2.imwrite(f'results/{sampleName}/gt_line.png', (gt_line_np * 255).astype(np.uint8))
     print(f"已保存参考图像至 results/{sampleName}/_bg_gt.png 和 {sampleName}_gt_line.png")
+    gt_proj_line_np = project_fiducials_to_line_mask(
+        drr_gene,
+        gt_pose.compose(vert_mat),
+        imgsize=imgsize,
+        radius=1,
+    )
 
+    cv2.imwrite(
+        f'results/{sampleName}/gt_projected_3d_side_points.png',
+        (gt_proj_line_np * 255).astype(np.uint8)
+    )
     # 可视化 GT 与其连续的侧边缘线
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
@@ -87,7 +116,7 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     ini_rot, ini_trans, pose_init = get_initial_parameters(true_params)
 
     # 5. 调用 CMA-ES 优化 (传入 bg_ground_truth 用于最后的重叠可视化)
-    optimize(drr_gene, vert_mat, ground_truth, bg_ground_truth, gt_line_np, sampleName, ini_rot, ini_trans)
+    # optimize(drr_gene, vert_mat, ground_truth, bg_ground_truth, gt_line_np, sampleName, ini_rot, ini_trans)
 
     del drr_gene
 
@@ -244,6 +273,45 @@ def get_initial_parameters(true_params):
     pose = pose_from_carm(by, bx, bz, alpha, beta, gamma).to(device)
     rotations, translations = pose.convert("euler_angles", "ZXY")
     return rotations, translations, pose
+
+
+def project_fiducials_to_line_mask(drr, pose, imgsize=256, radius=1):
+    """
+    使用 diffdrr 的 perspective_projection 投影 3D fiducials。
+    返回 2D binary line mask。
+    """
+
+    with torch.no_grad():
+        fiducials = drr.subject.fiducials.to(device=device, dtype=torch.float32)
+        points_det = drr.perspective_projection(pose, fiducials)
+
+    points_det = points_det.squeeze().detach().cpu().numpy()
+
+    if points_det.ndim == 1:
+        points_det = points_det[None, :]
+
+    points_det = np.rint(points_det).astype(np.int32)
+
+    inside = (
+        (points_det[:, 0] >= 0) &
+        (points_det[:, 0] < imgsize) &
+        (points_det[:, 1] >= 0) &
+        (points_det[:, 1] < imgsize)
+    )
+
+    points_det = points_det[inside]
+
+    line = np.zeros((imgsize, imgsize), dtype=np.uint8)
+
+    if len(points_det) > 0:
+        line[points_det[:, 1], points_det[:, 0]] = 1
+
+    if radius > 0:
+        k = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        line = cv2.dilate(line, kernel, iterations=1)
+
+    return line
 
 
 if __name__ == '__main__':
