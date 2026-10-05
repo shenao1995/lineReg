@@ -73,9 +73,15 @@ a GPU kernel, avoiding the large intermediate sample grids of the PyTorch path.
 hardware, image dimensions, and backend settings behind the reported speedups;
 those numbers are not measurements of LineReg on this machine.
 
-The verified Windows environment currently uses nanodrr's **PyTorch CUDA
-backend**, because Triton is unavailable. The adapter uses 500 samples per ray
-and float32, without `torch.compile`. The old LineReg renderer used DiffDRR's
+The adapter explicitly uses nanodrr's **Triton backend**. It was verified with
+`triton-windows` 3.7.1 and PyTorch 2.12.1 on the Windows RTX 4060 Ti environment.
+For this PyTorch version, install the matching Windows package with
+`python -m pip install "triton-windows>=3.7,<3.8"`. Other PyTorch versions need
+the corresponding Triton version; see the
+[Windows compatibility table](https://github.com/triton-lang/triton-windows#3-pytorch).
+The adapter uses 500 samples per ray and float32, without `torch.compile`.
+To use the PyTorch fallback, change `backend="triton"` to `backend="torch"`
+in `nanodrr_adapter.py`. The old LineReg renderer used DiffDRR's
 default Siddon integration, while nanodrr uses sampled trilinear ray marching.
 Camera geometry is preserved, but image intensities can differ due to the
 integration method and sample count. Compare image quality and runtime together

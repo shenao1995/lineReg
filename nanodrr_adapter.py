@@ -81,7 +81,7 @@ class LineRegDRR(torch.nn.Module):
     def forward(self, pose):
         return self.projector(
             self.subject, self.camera_to_world(pose),
-            n_samples=self.n_samples,
+            n_samples=self.n_samples, backend="triton",
         )
 
     def perspective_projection(self, pose, points):
