@@ -9,10 +9,8 @@ import cv2
 from tqdm import tqdm
 from cmaes import CMA
 
-from diffdrr.drr import DRR
-from diffdrr.data import read
-from diffdrr.pose import convert, RigidTransform
-from diffdrr.metrics import NormalizedCrossCorrelation2d
+from nanodrr.metrics import NormalizedCrossCorrelation2d
+from nanodrr_adapter import LineRegDRR, load_subject, pose_matrix, compose_vertebra_offset
 from utils import (
     crop_ct_vert,
     extract_traditional_edge,
@@ -34,9 +32,8 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
         "sdr": SDD, "alpha": 0.0, "beta": 0.0, "gamma": 0.0,
         "bx": 0.0, "by": 900.0, "bz": 0.0,
     }
-    bg_subject = read(origin_ct_path, bone_attenuation_multiplier=10.5)
-    bg_drr_gene = DRR(bg_subject, sdd=SDD, height=imgsize, delx=delx, reverse_x_axis=True).to(device,
-                                                                                              dtype=torch.float32)
+    bg_subject = load_subject(origin_ct_path, bone_attenuation_multiplier=10.5)
+    bg_drr_gene = LineRegDRR(bg_subject, sdd=SDD, height=imgsize, delx=delx).to(device, dtype=torch.float32)
 
     edge_points_3d = extract_ap_body_side_fiducials_from_target_volume(
         vol_path=save_dir,
@@ -51,13 +48,13 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     )
 
     fiducials = torch.from_numpy(edge_points_3d).unsqueeze(0).to(dtype=torch.float32)
-    subject = read(save_dir, fiducials=fiducials)
-    drr_gene = DRR(subject, sdd=SDD, height=imgsize, delx=delx, reverse_x_axis=True).to(device, dtype=torch.float32)
+    subject = load_subject(save_dir, fiducials=fiducials)
+    drr_gene = LineRegDRR(subject, sdd=SDD, height=imgsize, delx=delx).to(device, dtype=torch.float32)
 
     # 构建 Ground Truth (正位 DRR)
     gt_rot = torch.tensor([[true_params["alpha"], true_params["beta"], true_params["gamma"]]])
     gt_trans = torch.tensor([[true_params["bx"], true_params["by"], true_params["bz"]]])
-    gt_pose = convert(gt_rot, gt_trans, parameterization="euler_angles", convention="ZXY").to(device)
+    gt_pose = pose_matrix(gt_rot, gt_trans).to(device)
 
     vert_mat = np.array([
         [1.0, 0.0, 0.0, -offset_trans[0]],
@@ -65,10 +62,11 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
         [0.0, 0.0, 1.0, offset_trans[2]],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    vert_mat = RigidTransform(torch.FloatTensor(vert_mat)).to(device)
+    vert_mat = torch.as_tensor(vert_mat, dtype=torch.float32, device=device)
 
-    ground_truth = drr_gene(gt_pose.compose(vert_mat))
-    bg_ground_truth = bg_drr_gene(gt_pose)
+    with torch.no_grad():
+        ground_truth = drr_gene(compose_vertebra_offset(gt_pose, vert_mat))
+        bg_ground_truth = bg_drr_gene(gt_pose)
 
     print(f"GT Shape: {ground_truth.shape}")
 
@@ -86,13 +84,15 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     bg_img_np = bg_ground_truth.squeeze().detach().cpu().numpy()
     bg_norm = (bg_img_np - bg_img_np.min()) / (bg_img_np.max() - bg_img_np.min() + 1e-8) * 255.0
     cv2.imwrite(f'results/{sampleName}/bg_gt.png', bg_norm.astype(np.uint8))
+    gt_norm = (gt_img_np - gt_img_np.min()) / (gt_img_np.max() - gt_img_np.min() + 1e-8) * 255.0
+    cv2.imwrite(f'results/{sampleName}/nanodrr_gt.png', gt_norm.astype(np.uint8))
 
     # 将 mask 边缘线 (0 或 1) 转为 0 和 255 保存
     cv2.imwrite(f'results/{sampleName}/gt_line.png', (gt_line_np * 255).astype(np.uint8))
     print(f"已保存参考图像至 results/{sampleName}/_bg_gt.png 和 {sampleName}_gt_line.png")
     gt_proj_line_np = project_fiducials_to_line_mask(
         drr_gene,
-        gt_pose.compose(vert_mat),
+        compose_vertebra_offset(gt_pose, vert_mat),
         imgsize=imgsize,
         radius=1,
     )
@@ -116,12 +116,12 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
     ini_rot, ini_trans, pose_init = get_initial_parameters(true_params)
 
     # 5. 调用 CMA-ES 优化 (传入 bg_ground_truth 用于最后的重叠可视化)
-    # optimize(drr_gene, vert_mat, ground_truth, bg_ground_truth, gt_line_np, sampleName, ini_rot, ini_trans)
+    optimize(drr_gene, vert_mat, ground_truth, bg_ground_truth, gt_line_np, sampleName, ini_rot, ini_trans)
 
     del drr_gene
 
 
-def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial_rot, initial_trans, n_itrs=150):
+def optimize(reg: LineRegDRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial_rot, initial_trans, n_itrs=150):
     T1 = time.time()
 
     gncc_metric = NormalizedCrossCorrelation2d().to(device)
@@ -147,8 +147,8 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
     params_history = []
     loss_history = []
 
-    plt.ion()
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    # plt.ion()
+    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
 
     # 定义 Dice Loss 的权重
     dice_weight = 0.05
@@ -165,47 +165,49 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
             rot_tensor = torch.from_numpy(x_eval[:3]).float().unsqueeze(0).to(device)
             trans_tensor = torch.from_numpy(x_eval[3:]).float().unsqueeze(0).to(device)
 
-            est_pose = convert(rot_tensor, trans_tensor, parameterization="euler_angles", convention="ZXY").to(device)
+            est_pose = pose_matrix(rot_tensor, trans_tensor)
 
-            estimate = reg(est_pose.compose(vert_mat))
+            with torch.no_grad():
+                estimate = reg(compose_vertebra_offset(est_pose, vert_mat))
 
             # 1. 计算 NCC Loss
             gncc_val = gncc_metric(estimate, gt_img)
             gncc_loss = 1.0 - gncc_val.item()
 
             # 2. 提取 moving 图像边缘，计算 Dice Loss
-            est_line_np = extract_traditional_edge(estimate, threshold_ratio=0.08, margin_ratio=0.15)
+            # est_line_np = extract_traditional_edge(estimate, threshold_ratio=0.08, margin_ratio=0.15)
 
-            intersection = np.sum(est_line_np * gt_line_np)
-            union = np.sum(est_line_np) + np.sum(gt_line_np)
-            dice_loss = 1.0 - (2.0 * intersection + 1e-8) / (union + 1e-8)
+            # intersection = np.sum(est_line_np * gt_line_np)
+            # union = np.sum(est_line_np) + np.sum(gt_line_np)
+            # dice_loss = 1.0 - (2.0 * intersection + 1e-8) / (union + 1e-8)
 
             # 3. 组合总 Loss
-            total_loss = gncc_loss + dice_weight * dice_loss
+            # total_loss = gncc_loss + dice_weight * dice_loss
+            total_loss = gncc_loss
 
             solutions.append((x_eval, total_loss))
             op_loss_sum += total_loss
             gncc_loss_sum += gncc_loss
-            dice_loss_sum += dice_loss
+            # dice_loss_sum += dice_loss
 
         optimizer.tell(solutions)
 
         cur_loss = op_loss_sum / optimizer.population_size
         avg_ncc = gncc_loss_sum / optimizer.population_size
-        avg_dice = dice_loss_sum / optimizer.population_size
+        # avg_dice = dice_loss_sum / optimizer.population_size
 
         loss_history.append(cur_loss)
         best_params = optimizer._mean
         params_history.append(best_params.tolist())
 
-        tqdm.write(f"Itr {itr + 1:03d} | Total: {cur_loss:.4f} (NCC: {avg_ncc:.4f}, Dice: {avg_dice:.4f})")
+        tqdm.write(f"Itr {itr + 1:03d} | Total: {cur_loss:.4f} (NCC: {avg_ncc:.4f}")
 
         if itr > 20 and abs(loss_history[itr - 1] - cur_loss) < 1e-5:
             tqdm.write(f"Converged early in {itr + 1} iterations.")
             break
 
-    plt.ioff()
-    plt.close(fig)
+    # plt.ioff()
+    # plt.close(fig)
     T2 = time.time()
     print(f'配准耗时: {T2 - T1:.4f} 秒')
 
@@ -213,8 +215,8 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
     with torch.no_grad():
         final_rot = torch.from_numpy(np.array(params_history[-1][:3])).float().unsqueeze(0).to(device)
         final_trans = torch.from_numpy(np.array(params_history[-1][3:])).float().unsqueeze(0).to(device)
-        final_pose = convert(final_rot, final_trans, parameterization="euler_angles", convention="ZXY").to(device)
-        final_drr = reg(final_pose.compose(vert_mat))
+        final_pose = pose_matrix(final_rot, final_trans)
+        final_drr = reg(compose_vertebra_offset(final_pose, vert_mat))
 
     # --- 新增：提取 bg_ground_truth 作为背景 ---
     bg_np = bg_img.squeeze().detach().cpu().numpy()
@@ -259,7 +261,7 @@ def optimize(reg: DRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial
 def pose_from_carm(sid, tx, ty, alpha, beta, gamma):
     rot = torch.tensor([[alpha, beta, gamma]])
     xyz = torch.tensor([[tx, sid, ty]])
-    return convert(rot, xyz, parameterization="euler_angles", convention="ZXY")
+    return pose_matrix(rot, xyz)
 
 
 def get_initial_parameters(true_params):
@@ -270,14 +272,15 @@ def get_initial_parameters(true_params):
     by = true_params["by"] + np.random.uniform(-20.0, 20.0)
     bz = true_params["bz"] + np.random.uniform(-30.0, 30.0)
 
-    pose = pose_from_carm(by, bx, bz, alpha, beta, gamma).to(device)
-    rotations, translations = pose.convert("euler_angles", "ZXY")
+    rotations = torch.tensor([[alpha, beta, gamma]], dtype=torch.float32, device=device)
+    translations = torch.tensor([[bx, by, bz]], dtype=torch.float32, device=device)
+    pose = pose_matrix(rotations, translations)
     return rotations, translations, pose
 
 
 def project_fiducials_to_line_mask(drr, pose, imgsize=256, radius=1):
     """
-    使用 diffdrr 的 perspective_projection 投影 3D fiducials。
+    使用与 nanodrr 渲染相同的内外参投影 3D fiducials。
     返回 2D binary line mask。
     """
 

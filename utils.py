@@ -210,7 +210,7 @@ def extract_ap_body_side_fiducials_from_target_volume(
         "seg_label"  : 输入是全脊柱 label mask，需要指定 label_value，例如 L2=22
 
     返回:
-        points_xyz: [N, 3]，可以直接作为 diffdrr fiducials
+        points_xyz: [N, 3] RAS 世界坐标（nanodrr_adapter 会减去 CT 中心）
     """
 
     img = sitk.ReadImage(vol_path)

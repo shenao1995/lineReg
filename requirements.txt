@@ -1,0 +1,15 @@
+# Install a CUDA-enabled PyTorch build first if GPU rendering is needed.
+nanodrr @ git+https://github.com/eigenvivek/nanodrr.git@9836a4ed013a070c351465a9c2097ea903ec6c82
+numpy
+pandas
+scipy
+matplotlib
+opencv-python
+SimpleITK
+pyvista>=0.47
+cmaes
+tqdm
+Pillow
+monai
+einops
+ipython

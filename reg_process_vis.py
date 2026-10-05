@@ -6,10 +6,9 @@ import pandas as pd
 import pyvista
 from tqdm import tqdm
 from PIL import Image
-from diffdrr.drr import DRR
-from diffdrr.data import read
-from diffdrr.pose import convert, RigidTransform
-from diffdrr.visualization import drr_to_mesh, img_to_mesh
+from nanodrr.scene.camera import make_cameras
+from nanodrr.scene.surface import subject_to_mesh
+from nanodrr_adapter import LineRegDRR, load_subject, pose_matrix, compose_vertebra_offset
 
 # 假设这两个工具函数已经存在或被正确导入
 from utils import crop_ct_vert, extract_traditional_edge
@@ -59,14 +58,15 @@ def animate_combined_process():
         [0.0, 0.0, 1.0, offset_trans[2]],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    vert_mat = RigidTransform(torch.FloatTensor(vert_mat)).to(device)
+    vert_mat = torch.as_tensor(vert_mat, dtype=torch.float32, device=device)
 
-    subject = read(save_dir, bone_attenuation_multiplier=10.5)
-    drr_gene = DRR(subject, sdd=SDD, height=imgsize, delx=delx, reverse_x_axis=True).to(device, dtype=torch.float32)
+    subject = load_subject(save_dir, bone_attenuation_multiplier=10.5)
+    drr_gene = LineRegDRR(subject, sdd=SDD, height=imgsize, delx=delx).to(device, dtype=torch.float32)
 
     # --- 4. 准备 3D PyVista 资源 ---
     print("正在生成 3D 椎骨 Mesh (Surface Nets)...")
-    vert_mesh = drr_to_mesh(drr_gene.subject, "surface_nets", threshold=300, verbose=False)
+    mesh_subject = load_subject(save_dir, preserve_hu=True)
+    vert_mesh = subject_to_mesh(mesh_subject, use_label=False, cutoff=300, verbose=False)
 
     true_params = {
         "sdr": SDD, "alpha": 0.0, "beta": 0.0, "gamma": 0.0,
@@ -74,16 +74,21 @@ def animate_combined_process():
     }
     gt_rot = torch.tensor([[true_params["alpha"], true_params["beta"], true_params["gamma"]]])
     gt_trans = torch.tensor([[true_params["bx"], true_params["by"], true_params["bz"]]])
-    gt_pose = convert(gt_rot, gt_trans, parameterization="euler_angles", convention="ZXY").to(device)
+    gt_pose = pose_matrix(gt_rot, gt_trans).to(device)
 
-    gt_camera, gt_ap_detector, gt_texture, gt_principal_ray = img_to_mesh(drr_gene, gt_pose)
+    gt_camera_data = make_cameras(
+        drr_gene.projector.k_inv,
+        drr_gene.camera_to_world(compose_vertebra_offset(gt_pose, vert_mat)),
+        drr_gene.projector.sdd, imgsize, imgsize,
+        img=drr_gene(compose_vertebra_offset(gt_pose, vert_mat)),
+    )[0]
 
     # 初始化 3D 绘图窗口 (设定为 512x512 大小以配合 2D 图像拼接)
     plotter = pyvista.Plotter(off_screen=True, window_size=[512, 512])
     plotter.add_mesh(vert_mesh, color="ivory", name="static_vert_mesh")
-    plotter.add_mesh(gt_camera, show_edges=True, line_width=1.5, color="green", name="gt_camera")
-    plotter.add_mesh(gt_principal_ray, color="lime", line_width=3, name="gt_ray")
-    plotter.add_mesh(gt_ap_detector, texture=gt_texture, name="gt_detector")
+    plotter.add_mesh(gt_camera_data["camera"], show_edges=True, line_width=1.5, color="green", name="gt_camera")
+    plotter.add_mesh(gt_camera_data["principal_ray"], color="lime", line_width=3, name="gt_ray")
+    plotter.add_mesh(gt_camera_data["detector"], texture=gt_camera_data["texture"], name="gt_detector")
 
     # --- 5. 遍历 Pose 开始生成合并动画 ---
     poses_data = pd.read_csv(results_path)
@@ -94,13 +99,13 @@ def animate_combined_process():
     for idx, row in tqdm(poses_data.iterrows(), total=len(poses_data), ncols=100):
         rot_tensor = torch.tensor([[row["alpha"], row["beta"], row["gamma"]]], dtype=torch.float32, device=device)
         trans_tensor = torch.tensor([[row["bx"], row["by"], row["bz"]]], dtype=torch.float32, device=device)
-        pose = convert(rot_tensor, trans_tensor, parameterization="euler_angles", convention="ZXY").to(device)
+        pose = pose_matrix(rot_tensor, trans_tensor)
 
         # ==================================
         # 步骤 A：生成并处理 2D 图像
         # ==================================
         with torch.no_grad():
-            estimate = drr_gene(pose.compose(vert_mat))
+            estimate = drr_gene(compose_vertebra_offset(pose, vert_mat))
 
         mov_drr_np = estimate.squeeze().detach().cpu().numpy()
         mov_drr_np = (mov_drr_np - mov_drr_np.min()) / (mov_drr_np.max() - mov_drr_np.min() + 1e-8) * 255.0
@@ -130,10 +135,14 @@ def animate_combined_process():
         # ==================================
         # 步骤 B：生成并提取 3D 图像
         # ==================================
-        camera, detector, texture, principal_ray = img_to_mesh(drr_gene, pose)
-        plotter.add_mesh(camera, show_edges=True, line_width=1.5, color="red", name="dynamic_camera")
-        plotter.add_mesh(principal_ray, color="lime", line_width=3, name="dynamic_ray")
-        plotter.add_mesh(detector, texture=texture, name="dynamic_detector")
+        camera_data = make_cameras(
+            drr_gene.projector.k_inv,
+            drr_gene.camera_to_world(compose_vertebra_offset(pose, vert_mat)),
+            drr_gene.projector.sdd, imgsize, imgsize, img=estimate,
+        )[0]
+        plotter.add_mesh(camera_data["camera"], show_edges=True, line_width=1.5, color="red", name="dynamic_camera")
+        plotter.add_mesh(camera_data["principal_ray"], color="lime", line_width=3, name="dynamic_ray")
+        plotter.add_mesh(camera_data["detector"], texture=camera_data["texture"], name="dynamic_detector")
 
         # 主动渲染并提取图像数组为 RGB (尺寸为 512x512x3)
         plotter.render()
