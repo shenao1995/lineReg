@@ -1,0 +1,49 @@
+{
+  "mode": "dual",
+  "coordinate_convention": "legacy_temp",
+  "ct": "../Data/total_tuodao/dukemei/dukemei.nii.gz",
+  "segmentation": "../Data/total_tuodao/dukemei/L4_seg.nii.gz",
+  "label": 1,
+  "segmentation_space": "physical",
+  "vertebra": "L4",
+  "image_size": [256, 256],
+  "device": "cuda",
+  "backend": "triton",
+  "n_samples": 500,
+  "bone_attenuation_multiplier": 10.5,
+  "iterations": 100,
+  "population_size": 12,
+  "seed": 0,
+  "parameter_scales": [3, 3, 3, 10, 10, 10],
+  "source_to_target_mm": 750,
+  "single_view": "ap",
+  "output": "../results/real_case",
+  "views": [
+    {
+      "name": "ap",
+      "image": "../Data/real_case/View/180/virtualPlaneImg.tif",
+      "calibration": "../Data/real_case/View/180/calib_view.xml",
+      "rotate_180": true,
+      "invert": true,
+      "clahe": true,
+      "bbox_json": "../Data/real_case/ap_bbox.json",
+      "bbox_size": [976, 976],
+      "bbox_frame": "processed",
+      "bbox_margin": [5, 5],
+      "weight": 1
+    },
+    {
+      "name": "la",
+      "image": "../Data/real_case/View/1/virtualPlaneImg.tif",
+      "calibration": "../Data/real_case/View/1/calib_view.xml",
+      "rotate_180": true,
+      "invert": true,
+      "clahe": true,
+      "bbox_json": "../Data/real_case/la_bbox.json",
+      "bbox_size": [976, 976],
+      "bbox_frame": "processed",
+      "bbox_margin": [20, 10],
+      "weight": 1
+    }
+  ]
+}

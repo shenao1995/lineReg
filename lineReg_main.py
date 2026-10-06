@@ -9,7 +9,7 @@ import cv2
 from tqdm import tqdm
 from cmaes import CMA
 
-from nanodrr.metrics import NormalizedCrossCorrelation2d
+from gncc import GradientNormalizedCrossCorrelation2d
 from nanodrr_adapter import LineRegDRR, load_subject, pose_matrix, compose_vertebra_offset
 from utils import (
     crop_ct_vert,
@@ -124,7 +124,7 @@ def reg_method(origin_ct_path, seg_path, save_dir, sampleName, vertName):
 def optimize(reg: LineRegDRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, initial_rot, initial_trans, n_itrs=150):
     T1 = time.time()
 
-    gncc_metric = NormalizedCrossCorrelation2d().to(device)
+    gncc_metric = GradientNormalizedCrossCorrelation2d().to(device)
 
     rot = initial_rot.cpu().numpy().squeeze()
     trans = initial_trans.cpu().numpy().squeeze()
@@ -170,7 +170,7 @@ def optimize(reg: LineRegDRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, 
             with torch.no_grad():
                 estimate = reg(compose_vertebra_offset(est_pose, vert_mat))
 
-            # 1. 计算 NCC Loss
+            # 1. 计算 Sobel 梯度 GNCC Loss（不是原始灰度 NCC）
             gncc_val = gncc_metric(estimate, gt_img)
             gncc_loss = 1.0 - gncc_val.item()
 
@@ -193,14 +193,14 @@ def optimize(reg: LineRegDRR, vert_mat, gt_img, bg_img, gt_line_np, samplename, 
         optimizer.tell(solutions)
 
         cur_loss = op_loss_sum / optimizer.population_size
-        avg_ncc = gncc_loss_sum / optimizer.population_size
+        avg_gncc = gncc_loss_sum / optimizer.population_size
         # avg_dice = dice_loss_sum / optimizer.population_size
 
         loss_history.append(cur_loss)
         best_params = optimizer._mean
         params_history.append(best_params.tolist())
 
-        tqdm.write(f"Itr {itr + 1:03d} | Total: {cur_loss:.4f} (NCC: {avg_ncc:.4f}")
+        tqdm.write(f"Itr {itr + 1:03d} | Total: {cur_loss:.4f} (GNCC loss: {avg_gncc:.4f})")
 
         if itr > 20 and abs(loss_history[itr - 1] - cur_loss) < 1e-5:
             tqdm.write(f"Converged early in {itr + 1} iterations.")
